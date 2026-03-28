@@ -1,32 +1,45 @@
-# Go build artifacts
+# Binaries and build output
+/GoPilot
+/GoPilot.exe
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
 bin/
 dist/
-*.exe
+build/
+
+# Go test and coverage
 *.test
 *.out
-
-# Coverage
 *.cover
 coverage.out
+cover.out
 
 # Logs
 *.log
 
-# OS / editor
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/
-
-# Local secrets / config
+# Environment and secrets
 .env
 .env.*
+!.env.example
 client_secret.json
 token.json
 *.credentials.json
 
-# Temporary files
+# Temporary and cache files
 tmp/
 temp/
+.tmp/
+.cache/
 
-GoPilot
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
