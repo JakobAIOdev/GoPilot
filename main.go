@@ -193,6 +193,16 @@ func (m *model) addAssistantMessage(text string) {
 	m.messages = append(m.messages, message{from: "GoPilot", content: text})
 }
 
+func (m *model) resetConversation() {
+	m.sharedHistory = nil
+	m.messages = []message{
+		{
+			from:    "GoPilot",
+			content: "Conversation cleared. Shared context is empty now.",
+		},
+	}
+}
+
 func (m *model) setModelByName(name string) bool {
 	for i, modelName := range m.models {
 		if modelName == name {
@@ -282,6 +292,9 @@ func (m *model) handleSlashCommand(input string) bool {
 		}
 
 		m.addAssistantMessage(fmt.Sprintf("Unknown model %q.", selected))
+		return true
+	case "/clear":
+		m.resetConversation()
 		return true
 	default:
 		m.addAssistantMessage(fmt.Sprintf("Unknown command %q.", fields[0]))
