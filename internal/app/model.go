@@ -16,6 +16,16 @@ import (
 
 const windowTitle = "GoPilot"
 
+var initialSplash = strings.Join([]string{
+	"   ______      ____  _ __      __ ",
+	"  / ____/___  / __ \\(_) /___  / /_",
+	" / / __/ __ \\/ /_/ / / / __ \\/ __/",
+	"/ /_/ / /_/ / ____/ / / /_/ / /_  ",
+	"\\____/\\____/_/   /_/_/\\____/\\__/  ",
+	"",
+	"Ready for prompts.",
+}, "\n")
+
 type streamMsg struct {
 	event chat.StreamEvent
 }
@@ -74,7 +84,7 @@ func newModel() model {
 		models:     availableModels(),
 		modelIndex: 0,
 		messages: []chat.Message{
-			{From: "GoPilot", Content: "Ready for prompts. Gemini now streams over your local Google subscription sign-in from ~/.gemini."},
+			{From: "GoPilot", Content: initialSplash},
 		},
 	}
 

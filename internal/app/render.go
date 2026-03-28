@@ -9,8 +9,17 @@ import (
 )
 
 const appVerticalPadding = 2
+const classicLayoutWidth = 84
 
 func renderMessage(msg string, from string, width int) string {
+	if from == "GoPilot" && msg == initialSplash {
+		return lipgloss.JoinVertical(
+			lipgloss.Left,
+			assistantNameStyle.Render("gopilot"),
+			splashStyle.Render(msg),
+		)
+	}
+
 	bubbleWidth := min(max(width-2, 28), 76)
 	textWidth := max(bubbleWidth-4, 24)
 	textContent := lipgloss.NewStyle().
@@ -49,21 +58,14 @@ func (m *model) refreshLayout() {
 		return
 	}
 
-	panelWidth := max(m.panelW-4, 32)
-	viewportWidth := max(m.panelW-6, 28)
-	inputWidth := max(m.panelW-12, 20)
+	contentWidth := max(m.panelW, 36)
+	viewportWidth := max(contentWidth-4, 28)
+	inputWidth := max(contentWidth-4, 20)
 
 	m.viewport.SetWidth(viewportWidth)
 	m.input.SetWidth(inputWidth)
 
-	headerMeta := headerMetaStyle.Render("gemini subscription")
-	headerText := lipgloss.JoinVertical(
-		lipgloss.Left,
-		fmt.Sprintf("%s  %s", windowTitle, headerMeta),
-		fmt.Sprintf("Streaming terminal chat. Model: %s", m.currentModel()),
-	)
-
-	statusText := fmt.Sprintf("%d messages  •  Enter send  •  /model menu  •  Ctrl+N/Ctrl+P model  •  PgUp/PgDn scroll  •  Esc quit", len(m.messages))
+	statusText := fmt.Sprintf("%d msgs  •  Enter send  •  /model menu  •  Ctrl+N/Ctrl+P model  •  Esc quit", len(m.messages))
 	if m.waiting {
 		statusText = fmt.Sprintf("%s  •  streaming from %s", statusText, m.currentModel())
 	}
@@ -71,17 +73,16 @@ func (m *model) refreshLayout() {
 		statusText = fmt.Sprintf("%s  •  selecting model", statusText)
 	}
 
-	headerHeight := lipgloss.Height(headerStyle.Width(panelWidth).Render(headerText))
-	statusHeight := lipgloss.Height(statusStyle.Width(m.panelW - 2).Render(statusText))
-	inputHeight := lipgloss.Height(inputFrameStyle.Width(panelWidth).Render(m.input.View()))
-	metaHeight := lipgloss.Height(inputMetaStyle.Width(panelWidth).Render(fmt.Sprintf("Current model: %s", m.currentModel())))
-	footerHeight := lipgloss.Height(footerStyle.Render("Google subscription backend with streaming output."))
-	panelChromeHeight := lipgloss.Height(panelStyle.Width(panelWidth).Render("")) - 1
+	statusHeight := lipgloss.Height(statusStyle.Width(contentWidth).Render(statusText))
+	inputHeight := lipgloss.Height(inputFrameStyle.Width(contentWidth).Render(m.input.View()))
+	metaHeight := lipgloss.Height(inputMetaStyle.Width(contentWidth).Render(fmt.Sprintf("Current model: %s", m.currentModel())))
+
+	panelChromeHeight := lipgloss.Height(panelStyle.Width(contentWidth).Render("")) - 1
 
 	menuHeight := 0
 	if m.choosingModel {
 		menuHeight = lipgloss.Height(m.renderMenu(
-			panelWidth,
+			contentWidth,
 			"Model Selection",
 			"Up/Down choose  •  Enter confirm  •  Esc cancel",
 			m.models,
@@ -90,7 +91,7 @@ func (m *model) refreshLayout() {
 		))
 	}
 
-	occupiedHeight := appVerticalPadding + headerHeight + statusHeight + menuHeight + inputHeight + metaHeight + footerHeight + panelChromeHeight
+	occupiedHeight := appVerticalPadding + statusHeight + menuHeight + inputHeight + metaHeight + panelChromeHeight
 	viewportHeight := max(m.height-occupiedHeight, 4)
 	m.viewport.SetHeight(viewportHeight)
 }
@@ -131,14 +132,7 @@ func (m model) View() tea.View {
 		return v
 	}
 
-	headerMeta := headerMetaStyle.Render("gemini subscription")
-	headerText := lipgloss.JoinVertical(
-		lipgloss.Left,
-		fmt.Sprintf("%s  %s", windowTitle, headerMeta),
-		fmt.Sprintf("Streaming terminal chat. Model: %s", m.currentModel()),
-	)
-
-	statusText := fmt.Sprintf("%d messages  •  Enter send  •  /model menu  •  Ctrl+N/Ctrl+P model  •  PgUp/PgDn scroll  •  Esc quit", len(m.messages))
+	statusText := fmt.Sprintf("%d msgs  •  Enter send  •  /model menu  •  Ctrl+N/Ctrl+P model  •  Esc quit", len(m.messages))
 	if m.waiting {
 		statusText = fmt.Sprintf("%s  •  streaming from %s", statusText, m.currentModel())
 	}
@@ -146,15 +140,16 @@ func (m model) View() tea.View {
 		statusText = fmt.Sprintf("%s  •  selecting model", statusText)
 	}
 
-	status := statusStyle.Width(m.panelW - 2).Render(statusText)
-	conversation := panelStyle.Width(m.panelW - 4).Render(m.viewport.View())
-	inputCard := inputFrameStyle.Width(m.panelW - 4).Render(m.input.View())
-	inputMeta := inputMetaStyle.Width(m.panelW - 4).Render(fmt.Sprintf("Current model: %s", m.currentModel()))
+	contentWidth := max(m.panelW, 36)
+	status := statusStyle.Width(contentWidth).Render(statusText)
+	conversation := panelStyle.Width(contentWidth).Render(m.viewport.View())
+	inputCard := inputFrameStyle.Width(contentWidth).Render(m.input.View())
+	inputMeta := inputMetaStyle.Width(contentWidth).Render(fmt.Sprintf("Current model: %s", m.currentModel()))
 
 	menu := ""
 	if m.choosingModel {
 		menu = m.renderMenu(
-			m.panelW-4,
+			contentWidth,
 			"Model Selection",
 			"Up/Down choose  •  Enter confirm  •  Esc cancel",
 			m.models,
@@ -165,16 +160,19 @@ func (m model) View() tea.View {
 
 	content := lipgloss.JoinVertical(
 		lipgloss.Left,
-		headerStyle.Width(m.panelW-4).Render(headerText),
 		status,
 		conversation,
 		menu,
 		inputCard,
 		inputMeta,
-		footerStyle.Render("Google subscription backend with streaming output."),
 	)
 
-	v := tea.NewView(appStyle.Render(content))
+	layout := appStyle.Render(content)
+	if m.width > 0 {
+		layout = lipgloss.PlaceHorizontal(m.width, lipgloss.Center, layout)
+	}
+
+	v := tea.NewView(layout)
 	v.AltScreen = true
 	v.WindowTitle = windowTitle
 	return v

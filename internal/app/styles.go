@@ -5,14 +5,6 @@ import "charm.land/lipgloss/v2"
 var (
 	appStyle = lipgloss.NewStyle().Padding(1, 2)
 
-	headerStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#F5F5F5")).
-			Padding(0, 0, 1, 0).
-			Bold(true)
-
-	headerMetaStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#8A8A8A"))
-
 	statusStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#6F6F6F")).
 			Padding(0, 0, 1, 0)
@@ -40,14 +32,14 @@ var (
 				BorderForeground(lipgloss.Color("#3A3A3A")).
 				Padding(0, 1)
 
+	splashStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#EDEDED"))
+
 	inputFrameStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("#3A3A3A")).
 			Padding(0, 1).
 			MarginTop(1)
-
-	footerStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#6F6F6F"))
 
 	inputMetaStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#8A8A8A")).

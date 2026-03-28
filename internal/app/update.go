@@ -54,7 +54,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.panelW = max(msg.Width-10, 36)
+		m.panelW = min(max(msg.Width-6, 36), classicLayoutWidth)
 		m.refreshLayout()
 		m.ready = true
 		m.syncViewport()
