@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -18,14 +19,35 @@ type message struct {
 	content string
 }
 
+type geminiResponseMsg struct {
+	text string
+}
+
+type geminiErrorMsg struct {
+	err error
+}
+
+var availableModels = []string{
+	"gemini-2.5-flash",
+	"gemini-2.5-pro",
+	"gemini-3-flash-preview",
+	"gemini-3-pro-preview",
+}
+
 type model struct {
-	input    textinput.Model
-	viewport viewport.Model
-	messages []message
-	ready    bool
-	width    int
-	height   int
-	panelW   int
+	input          textinput.Model
+	viewport       viewport.Model
+	messages       []message
+	backend        chatBackend
+	ready          bool
+	waiting        bool
+	choosingModel  bool
+	modelMenuIndex int
+	models         []string
+	modelIndex     int
+	width          int
+	height         int
+	panelW         int
 }
 
 var (
@@ -78,6 +100,26 @@ var (
 	loadingStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#EDEDED")).
 			Padding(1, 2)
+
+	menuStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#3A3A3A")).
+			Padding(0, 1).
+			MarginTop(1)
+
+	menuTitleStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#F5F5F5")).
+			Bold(true)
+
+	menuHintStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#8A8A8A"))
+
+	menuItemStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#D0D0D0"))
+
+	menuSelectedStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#F5F5F5")).
+				Bold(true)
 )
 
 func initialModel() model {
@@ -99,15 +141,135 @@ func initialModel() model {
 	vp.SoftWrap = true
 
 	m := model{
-		input:    ti,
-		viewport: vp,
+		input:      ti,
+		viewport:   vp,
+		backend:    newGeminiCLIBackend(),
+		models:     availableModels,
+		modelIndex: 0,
 		messages: []message{
-			{from: "GoPilot", content: "Ready for prompts. Clean terminal, stronger contrast, and a layout that feels more deliberate than the stock demo."},
+			{from: "GoPilot", content: "Ready for prompts. Responses now wait for Gemini to finish, and you can switch models quickly with ctrl+n / ctrl+p."},
 		},
 	}
 
 	m.syncViewport()
 	return m
+}
+
+func requestGeminiResponse(backend chatBackend, selectedModel string, prompt string) tea.Cmd {
+	return func() tea.Msg {
+		text, err := backend.Generate(context.Background(), selectedModel, prompt)
+		if err != nil {
+			return geminiErrorMsg{err: err}
+		}
+		return geminiResponseMsg{text: text}
+	}
+}
+
+func (m model) currentModel() string {
+	if len(m.models) == 0 {
+		return ""
+	}
+	if m.modelIndex < 0 || m.modelIndex >= len(m.models) {
+		return m.models[0]
+	}
+	return m.models[m.modelIndex]
+}
+
+func (m *model) cycleModel(step int) {
+	if len(m.models) == 0 {
+		return
+	}
+	m.modelIndex = (m.modelIndex + step + len(m.models)) % len(m.models)
+}
+
+func (m *model) addAssistantMessage(text string) {
+	m.messages = append(m.messages, message{from: "GoPilot", content: text})
+}
+
+func (m *model) setModelByName(name string) bool {
+	for i, modelName := range m.models {
+		if modelName == name {
+			m.modelIndex = i
+			return true
+		}
+	}
+	return false
+}
+
+func (m *model) openModelMenu() {
+	m.choosingModel = true
+	m.modelMenuIndex = m.modelIndex
+}
+
+func (m *model) closeModelMenu() {
+	m.choosingModel = false
+	m.input.SetValue("")
+}
+
+func (m *model) cycleModelMenu(step int) {
+	if len(m.models) == 0 {
+		return
+	}
+	m.modelMenuIndex = (m.modelMenuIndex + step + len(m.models)) % len(m.models)
+}
+
+func (m model) renderModelMenu(width int) string {
+	var lines []string
+	lines = append(lines, menuTitleStyle.Render("Model Selection"))
+	lines = append(lines, menuHintStyle.Render("Up/Down choose  •  Enter confirm  •  Esc cancel"))
+	lines = append(lines, "")
+
+	for i, modelName := range m.models {
+		prefix := "  "
+		if i == m.modelMenuIndex {
+			prefix = "> "
+		}
+
+		label := fmt.Sprintf("%s%s", prefix, modelName)
+		if i == m.modelIndex {
+			label += "  (active)"
+		}
+
+		if i == m.modelMenuIndex {
+			lines = append(lines, menuSelectedStyle.Render(label))
+			continue
+		}
+
+		lines = append(lines, menuItemStyle.Render(label))
+	}
+
+	return menuStyle.Width(width).Render(strings.Join(lines, "\n"))
+}
+
+func (m *model) handleSlashCommand(input string) bool {
+	if !strings.HasPrefix(input, "/") {
+		return false
+	}
+
+	fields := strings.Fields(input)
+	if len(fields) == 0 {
+		return false
+	}
+
+	switch fields[0] {
+	case "/model":
+		if len(fields) == 1 {
+			m.openModelMenu()
+			return true
+		}
+
+		selected := strings.TrimSpace(fields[1])
+		if m.setModelByName(selected) {
+			m.addAssistantMessage(fmt.Sprintf("Active model switched to %s.", m.currentModel()))
+			return true
+		}
+
+		m.addAssistantMessage(fmt.Sprintf("Unknown model %q.", selected))
+		return true
+	default:
+		m.addAssistantMessage(fmt.Sprintf("Unknown command %q.", fields[0]))
+		return true
+	}
 }
 
 func (m *model) syncViewport() {
@@ -140,21 +302,92 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.GotoBottom()
 		return m, nil
 
+	case geminiResponseMsg:
+		m.waiting = false
+		m.replaceLastAssistantMessage(msg.text)
+		m.syncViewport()
+		m.viewport.GotoBottom()
+		return m, nil
+
+	case geminiErrorMsg:
+		m.waiting = false
+		m.replaceLastAssistantMessage(fmt.Sprintf("Gemini request failed: %v", msg.err))
+		m.syncViewport()
+		m.viewport.GotoBottom()
+		return m, nil
+
 	case tea.KeyMsg:
+		if m.choosingModel {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc":
+				m.closeModelMenu()
+				m.syncViewport()
+				return m, nil
+			case "up", "ctrl+p":
+				m.cycleModelMenu(-1)
+				return m, nil
+			case "down", "ctrl+n":
+				m.cycleModelMenu(1)
+				return m, nil
+			case "enter":
+				m.modelIndex = m.modelMenuIndex
+				m.closeModelMenu()
+				m.syncViewport()
+				return m, nil
+			}
+
+			return m, nil
+		}
+
 		switch msg.String() {
 		case "ctrl+c", "esc":
 			return m, tea.Quit
+		case "ctrl+n":
+			if m.waiting {
+				return m, nil
+			}
+			m.cycleModel(1)
+			m.syncViewport()
+			return m, nil
+		case "ctrl+p":
+			if m.waiting {
+				return m, nil
+			}
+			m.cycleModel(-1)
+			m.syncViewport()
+			return m, nil
 		case "enter":
+			if m.waiting {
+				return m, nil
+			}
+
 			userText := strings.TrimSpace(m.input.Value())
 			if userText == "" {
 				return m, nil
 			}
+
+			if strings.HasPrefix(userText, "/") {
+				handled := m.handleSlashCommand(userText)
+				if handled {
+					m.input.SetValue("")
+				}
+				m.syncViewport()
+				m.viewport.GotoBottom()
+				return m, nil
+			}
+
 			m.messages = append(m.messages, message{from: "User", content: userText})
-			m.messages = append(m.messages, message{from: "GoPilot", content: fmt.Sprintf("Echo mode is still active. You said: %q", userText)})
+			m.messages = append(m.messages, message{
+				from:    "GoPilot",
+				content: fmt.Sprintf("Waiting for %s...", m.currentModel()),
+			})
+			m.waiting = true
 			m.input.SetValue("")
 			m.syncViewport()
 			m.viewport.GotoBottom()
-			return m, nil
+			return m, requestGeminiResponse(m.backend, m.currentModel(), userText)
 		}
 	}
 
@@ -165,6 +398,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.viewport, cmd = m.viewport.Update(msg)
 	cmds = append(cmds, cmd)
 	return m, tea.Batch(cmds...)
+}
+
+func (m *model) replaceLastAssistantMessage(text string) {
+	for i := len(m.messages) - 1; i >= 0; i-- {
+		if m.messages[i].from == "GoPilot" {
+			m.messages[i].content = text
+			return
+		}
+	}
+
+	m.messages = append(m.messages, message{from: "GoPilot", content: text})
 }
 
 func renderMessage(msg message, width int) string {
@@ -197,23 +441,34 @@ func (m model) View() tea.View {
 	headerText := lipgloss.JoinVertical(
 		lipgloss.Left,
 		fmt.Sprintf("%s  %s", windowTitle, headerMeta),
-		"Simple terminal chat UI.",
+		fmt.Sprintf("Simple terminal chat UI. Active model: %s", m.currentModel()),
 	)
 
-	status := statusStyle.Width(m.panelW - 2).Render(
-		fmt.Sprintf("%d messages  •  Enter send  •  PgUp/PgDn scroll  •  Esc quit", len(m.messages)),
-	)
+	statusText := fmt.Sprintf("%d messages  •  Enter send  •  /model menu  •  Ctrl+N/Ctrl+P model  •  PgUp/PgDn scroll  •  Esc quit", len(m.messages))
+	if m.waiting {
+		statusText = fmt.Sprintf("%s  •  waiting for %s", statusText, m.currentModel())
+	}
+	if m.choosingModel {
+		statusText = fmt.Sprintf("%s  •  selecting model", statusText)
+	}
+
+	status := statusStyle.Width(m.panelW - 2).Render(statusText)
 
 	conversation := panelStyle.Width(m.panelW - 4).Render(m.viewport.View())
 	inputCard := inputFrameStyle.Width(m.panelW - 4).Render(m.input.View())
+	menu := ""
+	if m.choosingModel {
+		menu = m.renderModelMenu(m.panelW - 4)
+	}
 
 	content := lipgloss.JoinVertical(
 		lipgloss.Left,
 		headerStyle.Width(m.panelW-4).Render(headerText),
 		status,
 		conversation,
+		menu,
 		inputCard,
-		footerStyle.Render("Minimal layout, no extra noise."),
+		footerStyle.Render("Gemini CLI backend with quick model switching."),
 	)
 
 	return tea.NewView(appStyle.Render(content))
