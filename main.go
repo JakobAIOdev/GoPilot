@@ -20,11 +20,13 @@ type message struct {
 }
 
 type geminiResponseMsg struct {
-	text string
+	model string
+	text  string
 }
 
 type geminiErrorMsg struct {
-	err error
+	model string
+	err   error
 }
 
 var availableModels = []string{
@@ -38,6 +40,7 @@ type model struct {
 	input          textinput.Model
 	viewport       viewport.Model
 	messages       []message
+	sharedHistory  []message
 	backend        chatBackend
 	ready          bool
 	waiting        bool
@@ -97,6 +100,10 @@ var (
 	footerStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#6F6F6F"))
 
+	inputMetaStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#8A8A8A")).
+			Padding(0, 0, 0, 1)
+
 	loadingStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#EDEDED")).
 			Padding(1, 2)
@@ -155,13 +162,13 @@ func initialModel() model {
 	return m
 }
 
-func requestGeminiResponse(backend chatBackend, selectedModel string, prompt string) tea.Cmd {
+func requestGeminiResponse(backend chatBackend, selectedModel string, prompt string, history []message) tea.Cmd {
 	return func() tea.Msg {
-		text, err := backend.Generate(context.Background(), selectedModel, prompt)
+		text, err := backend.Generate(context.Background(), selectedModel, buildPromptWithHistory(history, prompt))
 		if err != nil {
-			return geminiErrorMsg{err: err}
+			return geminiErrorMsg{model: selectedModel, err: err}
 		}
-		return geminiResponseMsg{text: text}
+		return geminiResponseMsg{model: selectedModel, text: text}
 	}
 }
 
@@ -211,6 +218,16 @@ func (m *model) cycleModelMenu(step int) {
 		return
 	}
 	m.modelMenuIndex = (m.modelMenuIndex + step + len(m.models)) % len(m.models)
+}
+
+func cloneMessages(messages []message) []message {
+	if len(messages) == 0 {
+		return nil
+	}
+
+	cloned := make([]message, len(messages))
+	copy(cloned, messages)
+	return cloned
 }
 
 func (m model) renderModelMenu(width int) string {
@@ -305,6 +322,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case geminiResponseMsg:
 		m.waiting = false
 		m.replaceLastAssistantMessage(msg.text)
+		m.sharedHistory = append(m.sharedHistory, message{from: "GoPilot", content: msg.text})
 		m.syncViewport()
 		m.viewport.GotoBottom()
 		return m, nil
@@ -383,11 +401,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				from:    "GoPilot",
 				content: fmt.Sprintf("Waiting for %s...", m.currentModel()),
 			})
+			currentModel := m.currentModel()
+			history := cloneMessages(m.sharedHistory)
+			m.sharedHistory = append(m.sharedHistory, message{from: "User", content: userText})
 			m.waiting = true
 			m.input.SetValue("")
 			m.syncViewport()
 			m.viewport.GotoBottom()
-			return m, requestGeminiResponse(m.backend, m.currentModel(), userText)
+			return m, requestGeminiResponse(m.backend, currentModel, userText, history)
 		}
 	}
 
@@ -412,23 +433,25 @@ func (m *model) replaceLastAssistantMessage(text string) {
 }
 
 func renderMessage(msg message, width int) string {
-	maxContentWidth := min(max(width-6, 24), 72)
+	bubbleWidth := min(max(width-2, 28), 76)
+	textWidth := max(bubbleWidth-4, 24)
 	textContent := lipgloss.NewStyle().
-		MaxWidth(maxContentWidth).
+		Width(textWidth).
+		MaxWidth(textWidth).
 		Render(msg.content)
 
 	if msg.from == "User" {
 		return lipgloss.JoinVertical(
 			lipgloss.Left,
 			userNameStyle.Render("you"),
-			userBubbleStyle.MaxWidth(maxContentWidth).Render(textContent),
+			userBubbleStyle.Width(bubbleWidth).MaxWidth(bubbleWidth).Render(textContent),
 		)
 	}
 
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
 		assistantNameStyle.Render("gopilot"),
-		assistantBubbleStyle.MaxWidth(maxContentWidth).Render(textContent),
+		assistantBubbleStyle.Width(bubbleWidth).MaxWidth(bubbleWidth).Render(textContent),
 	)
 }
 
@@ -456,6 +479,7 @@ func (m model) View() tea.View {
 
 	conversation := panelStyle.Width(m.panelW - 4).Render(m.viewport.View())
 	inputCard := inputFrameStyle.Width(m.panelW - 4).Render(m.input.View())
+	inputMeta := inputMetaStyle.Width(m.panelW - 4).Render(fmt.Sprintf("Current model: %s", m.currentModel()))
 	menu := ""
 	if m.choosingModel {
 		menu = m.renderModelMenu(m.panelW - 4)
@@ -468,6 +492,7 @@ func (m model) View() tea.View {
 		conversation,
 		menu,
 		inputCard,
+		inputMeta,
 		footerStyle.Render("Gemini CLI backend with quick model switching."),
 	)
 

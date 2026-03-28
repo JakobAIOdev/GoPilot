@@ -67,3 +67,38 @@ func (b geminiCLIBackend) Generate(ctx context.Context, model string, prompt str
 
 	return text, nil
 }
+
+func buildPromptWithHistory(history []message, userPrompt string) string {
+	const maxHistoryMessages = 12
+
+	trimmedHistory := history
+	if len(trimmedHistory) > maxHistoryMessages {
+		trimmedHistory = trimmedHistory[len(trimmedHistory)-maxHistoryMessages:]
+	}
+
+	var b strings.Builder
+	b.WriteString("You are in an ongoing chat. Continue the conversation consistently.\n")
+	b.WriteString("Use the conversation history below as context. Reply to the latest user message.\n\n")
+	b.WriteString("Conversation history:\n")
+
+	if len(trimmedHistory) == 0 {
+		b.WriteString("(no previous messages)\n")
+	} else {
+		for _, msg := range trimmedHistory {
+			role := "Assistant"
+			if msg.from == "User" {
+				role = "User"
+			}
+			b.WriteString(role)
+			b.WriteString(": ")
+			b.WriteString(msg.content)
+			b.WriteString("\n")
+		}
+	}
+
+	b.WriteString("\nLatest user message:\n")
+	b.WriteString(userPrompt)
+	b.WriteString("\n")
+
+	return b.String()
+}
