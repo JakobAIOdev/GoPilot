@@ -1,6 +1,7 @@
 # Binaries and build output
 /GoPilot
 /GoPilot.exe
+/main
 *.exe
 *.exe~
 *.dll
