@@ -20,37 +20,34 @@ type message struct {
 }
 
 type geminiResponseMsg struct {
-	model string
-	text  string
+	provider string
+	model    string
+	text     string
 }
 
 type geminiErrorMsg struct {
-	model string
-	err   error
-}
-
-var availableModels = []string{
-	"gemini-2.5-flash",
-	"gemini-2.5-pro",
-	"gemini-3-flash-preview",
-	"gemini-3-pro-preview",
+	provider string
+	model    string
+	err      error
 }
 
 type model struct {
-	input          textinput.Model
-	viewport       viewport.Model
-	messages       []message
-	sharedHistory  []message
-	backend        chatBackend
-	ready          bool
-	waiting        bool
-	choosingModel  bool
-	modelMenuIndex int
-	models         []string
-	modelIndex     int
-	width          int
-	height         int
-	panelW         int
+	input             textinput.Model
+	viewport          viewport.Model
+	messages          []message
+	sharedHistory     []message
+	providers         []providerConfig
+	providerIndex     int
+	modelIndices      map[string]int
+	ready             bool
+	waiting           bool
+	choosingProvider  bool
+	choosingModel     bool
+	providerMenuIndex int
+	modelMenuIndex    int
+	width             int
+	height            int
+	panelW            int
 }
 
 var (
@@ -147,14 +144,20 @@ func initialModel() model {
 	vp.SetWidth(80)
 	vp.SoftWrap = true
 
+	providers := availableProviders()
+	modelIndices := make(map[string]int, len(providers))
+	for _, provider := range providers {
+		modelIndices[provider.Name] = 0
+	}
+
 	m := model{
-		input:      ti,
-		viewport:   vp,
-		backend:    newGeminiCLIBackend(),
-		models:     availableModels,
-		modelIndex: 0,
+		input:         ti,
+		viewport:      vp,
+		providers:     providers,
+		modelIndices:  modelIndices,
+		providerIndex: 0,
 		messages: []message{
-			{from: "GoPilot", content: "Ready for prompts. Responses now wait for Gemini to finish, and you can switch models quickly with ctrl+n / ctrl+p."},
+			{from: "GoPilot", content: "Ready for prompts. Gemini and Codex are available as local CLI backends, and you can switch providers or models from the UI."},
 		},
 	}
 
@@ -162,31 +165,45 @@ func initialModel() model {
 	return m
 }
 
-func requestGeminiResponse(backend chatBackend, selectedModel string, prompt string, history []message) tea.Cmd {
+func requestModelResponse(provider providerConfig, selectedModel string, prompt string, history []message) tea.Cmd {
 	return func() tea.Msg {
-		text, err := backend.Generate(context.Background(), selectedModel, buildPromptWithHistory(history, prompt))
+		text, err := provider.Backend.Generate(context.Background(), selectedModel, buildPromptWithHistory(history, prompt))
 		if err != nil {
-			return geminiErrorMsg{model: selectedModel, err: err}
+			return geminiErrorMsg{provider: provider.Name, model: selectedModel, err: err}
 		}
-		return geminiResponseMsg{model: selectedModel, text: text}
+		return geminiResponseMsg{provider: provider.Name, model: selectedModel, text: text}
 	}
+}
+
+func (m model) currentProvider() providerConfig {
+	if len(m.providers) == 0 {
+		return providerConfig{}
+	}
+	if m.providerIndex < 0 || m.providerIndex >= len(m.providers) {
+		return m.providers[0]
+	}
+	return m.providers[m.providerIndex]
 }
 
 func (m model) currentModel() string {
-	if len(m.models) == 0 {
+	provider := m.currentProvider()
+	if len(provider.Models) == 0 {
 		return ""
 	}
-	if m.modelIndex < 0 || m.modelIndex >= len(m.models) {
-		return m.models[0]
+	index := m.modelIndices[provider.Name]
+	if index < 0 || index >= len(provider.Models) {
+		return provider.Models[0]
 	}
-	return m.models[m.modelIndex]
+	return provider.Models[index]
 }
 
 func (m *model) cycleModel(step int) {
-	if len(m.models) == 0 {
+	provider := m.currentProvider()
+	if len(provider.Models) == 0 {
 		return
 	}
-	m.modelIndex = (m.modelIndex + step + len(m.models)) % len(m.models)
+	currentIndex := m.modelIndices[provider.Name]
+	m.modelIndices[provider.Name] = (currentIndex + step + len(provider.Models)) % len(provider.Models)
 }
 
 func (m *model) addAssistantMessage(text string) {
@@ -204,9 +221,20 @@ func (m *model) resetConversation() {
 }
 
 func (m *model) setModelByName(name string) bool {
-	for i, modelName := range m.models {
+	provider := m.currentProvider()
+	for i, modelName := range provider.Models {
 		if modelName == name {
-			m.modelIndex = i
+			m.modelIndices[provider.Name] = i
+			return true
+		}
+	}
+	return false
+}
+
+func (m *model) setProviderByName(name string) bool {
+	for i, provider := range m.providers {
+		if provider.Name == name {
+			m.providerIndex = i
 			return true
 		}
 	}
@@ -215,7 +243,8 @@ func (m *model) setModelByName(name string) bool {
 
 func (m *model) openModelMenu() {
 	m.choosingModel = true
-	m.modelMenuIndex = m.modelIndex
+	provider := m.currentProvider()
+	m.modelMenuIndex = m.modelIndices[provider.Name]
 }
 
 func (m *model) closeModelMenu() {
@@ -223,11 +252,29 @@ func (m *model) closeModelMenu() {
 	m.input.SetValue("")
 }
 
+func (m *model) openProviderMenu() {
+	m.choosingProvider = true
+	m.providerMenuIndex = m.providerIndex
+}
+
+func (m *model) closeProviderMenu() {
+	m.choosingProvider = false
+	m.input.SetValue("")
+}
+
 func (m *model) cycleModelMenu(step int) {
-	if len(m.models) == 0 {
+	provider := m.currentProvider()
+	if len(provider.Models) == 0 {
 		return
 	}
-	m.modelMenuIndex = (m.modelMenuIndex + step + len(m.models)) % len(m.models)
+	m.modelMenuIndex = (m.modelMenuIndex + step + len(provider.Models)) % len(provider.Models)
+}
+
+func (m *model) cycleProviderMenu(step int) {
+	if len(m.providers) == 0 {
+		return
+	}
+	m.providerMenuIndex = (m.providerMenuIndex + step + len(m.providers)) % len(m.providers)
 }
 
 func cloneMessages(messages []message) []message {
@@ -240,24 +287,24 @@ func cloneMessages(messages []message) []message {
 	return cloned
 }
 
-func (m model) renderModelMenu(width int) string {
+func (m model) renderMenu(width int, title string, hint string, items []string, activeIndex int, menuIndex int) string {
 	var lines []string
-	lines = append(lines, menuTitleStyle.Render("Model Selection"))
-	lines = append(lines, menuHintStyle.Render("Up/Down choose  •  Enter confirm  •  Esc cancel"))
+	lines = append(lines, menuTitleStyle.Render(title))
+	lines = append(lines, menuHintStyle.Render(hint))
 	lines = append(lines, "")
 
-	for i, modelName := range m.models {
+	for i, itemName := range items {
 		prefix := "  "
-		if i == m.modelMenuIndex {
+		if i == menuIndex {
 			prefix = "> "
 		}
 
-		label := fmt.Sprintf("%s%s", prefix, modelName)
-		if i == m.modelIndex {
+		label := fmt.Sprintf("%s%s", prefix, itemName)
+		if i == activeIndex {
 			label += "  (active)"
 		}
 
-		if i == m.modelMenuIndex {
+		if i == menuIndex {
 			lines = append(lines, menuSelectedStyle.Render(label))
 			continue
 		}
@@ -292,6 +339,20 @@ func (m *model) handleSlashCommand(input string) bool {
 		}
 
 		m.addAssistantMessage(fmt.Sprintf("Unknown model %q.", selected))
+		return true
+	case "/provider":
+		if len(fields) == 1 {
+			m.openProviderMenu()
+			return true
+		}
+
+		selected := strings.TrimSpace(fields[1])
+		if m.setProviderByName(selected) {
+			m.addAssistantMessage(fmt.Sprintf("Active provider switched to %s.", m.currentProvider().Name))
+			return true
+		}
+
+		m.addAssistantMessage(fmt.Sprintf("Unknown provider %q.", selected))
 		return true
 	case "/clear":
 		m.resetConversation()
@@ -348,6 +409,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.choosingProvider {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc":
+				m.closeProviderMenu()
+				m.syncViewport()
+				return m, nil
+			case "up", "ctrl+p":
+				m.cycleProviderMenu(-1)
+				return m, nil
+			case "down", "ctrl+n":
+				m.cycleProviderMenu(1)
+				return m, nil
+			case "enter":
+				m.providerIndex = m.providerMenuIndex
+				m.closeProviderMenu()
+				m.syncViewport()
+				return m, nil
+			}
+
+			return m, nil
+		}
+
 		if m.choosingModel {
 			switch msg.String() {
 			case "ctrl+c":
@@ -363,7 +448,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cycleModelMenu(1)
 				return m, nil
 			case "enter":
-				m.modelIndex = m.modelMenuIndex
+				provider := m.currentProvider()
+				m.modelIndices[provider.Name] = m.modelMenuIndex
 				m.closeModelMenu()
 				m.syncViewport()
 				return m, nil
@@ -412,8 +498,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.messages = append(m.messages, message{from: "User", content: userText})
 			m.messages = append(m.messages, message{
 				from:    "GoPilot",
-				content: fmt.Sprintf("Waiting for %s...", m.currentModel()),
+				content: fmt.Sprintf("Waiting for %s via %s...", m.currentModel(), m.currentProvider().Name),
 			})
+			currentProvider := m.currentProvider()
 			currentModel := m.currentModel()
 			history := cloneMessages(m.sharedHistory)
 			m.sharedHistory = append(m.sharedHistory, message{from: "User", content: userText})
@@ -421,7 +508,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input.SetValue("")
 			m.syncViewport()
 			m.viewport.GotoBottom()
-			return m, requestGeminiResponse(m.backend, currentModel, userText, history)
+			return m, requestModelResponse(currentProvider, currentModel, userText, history)
 		}
 	}
 
@@ -477,12 +564,15 @@ func (m model) View() tea.View {
 	headerText := lipgloss.JoinVertical(
 		lipgloss.Left,
 		fmt.Sprintf("%s  %s", windowTitle, headerMeta),
-		fmt.Sprintf("Simple terminal chat UI. Active model: %s", m.currentModel()),
+		fmt.Sprintf("Simple terminal chat UI. Provider: %s  •  Model: %s", m.currentProvider().Name, m.currentModel()),
 	)
 
-	statusText := fmt.Sprintf("%d messages  •  Enter send  •  /model menu  •  Ctrl+N/Ctrl+P model  •  PgUp/PgDn scroll  •  Esc quit", len(m.messages))
+	statusText := fmt.Sprintf("%d messages  •  Enter send  •  /provider menu  •  /model menu  •  Ctrl+N/Ctrl+P model  •  PgUp/PgDn scroll  •  Esc quit", len(m.messages))
 	if m.waiting {
-		statusText = fmt.Sprintf("%s  •  waiting for %s", statusText, m.currentModel())
+		statusText = fmt.Sprintf("%s  •  waiting for %s via %s", statusText, m.currentModel(), m.currentProvider().Name)
+	}
+	if m.choosingProvider {
+		statusText = fmt.Sprintf("%s  •  selecting provider", statusText)
 	}
 	if m.choosingModel {
 		statusText = fmt.Sprintf("%s  •  selecting model", statusText)
@@ -492,10 +582,32 @@ func (m model) View() tea.View {
 
 	conversation := panelStyle.Width(m.panelW - 4).Render(m.viewport.View())
 	inputCard := inputFrameStyle.Width(m.panelW - 4).Render(m.input.View())
-	inputMeta := inputMetaStyle.Width(m.panelW - 4).Render(fmt.Sprintf("Current model: %s", m.currentModel()))
+	inputMeta := inputMetaStyle.Width(m.panelW - 4).Render(fmt.Sprintf("Current provider: %s  •  Current model: %s", m.currentProvider().Name, m.currentModel()))
 	menu := ""
+	if m.choosingProvider {
+		providerNames := make([]string, 0, len(m.providers))
+		for _, provider := range m.providers {
+			providerNames = append(providerNames, provider.Name)
+		}
+		menu = m.renderMenu(
+			m.panelW-4,
+			"Provider Selection",
+			"Up/Down choose  •  Enter confirm  •  Esc cancel",
+			providerNames,
+			m.providerIndex,
+			m.providerMenuIndex,
+		)
+	}
 	if m.choosingModel {
-		menu = m.renderModelMenu(m.panelW - 4)
+		provider := m.currentProvider()
+		menu = m.renderMenu(
+			m.panelW-4,
+			"Model Selection",
+			fmt.Sprintf("Provider: %s  •  Up/Down choose  •  Enter confirm  •  Esc cancel", provider.Name),
+			provider.Models,
+			m.modelIndices[provider.Name],
+			m.modelMenuIndex,
+		)
 	}
 
 	content := lipgloss.JoinVertical(
