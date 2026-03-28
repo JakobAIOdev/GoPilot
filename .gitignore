@@ -1,0 +1,30 @@
+# Go build artifacts
+bin/
+dist/
+*.exe
+*.test
+*.out
+
+# Coverage
+*.cover
+coverage.out
+
+# Logs
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local secrets / config
+.env
+.env.*
+client_secret.json
+token.json
+*.credentials.json
+
+# Temporary files
+tmp/
+temp/
