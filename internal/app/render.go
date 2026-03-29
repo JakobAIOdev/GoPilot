@@ -395,17 +395,6 @@ func (m *model) refreshLayout() {
 	m.viewport.SetHeight(viewportHeight)
 }
 
-func (m model) renderConversation(width int) string {
-	var b strings.Builder
-	for i, msg := range m.messages {
-		b.WriteString(renderMessage(msg.Content, msg.From, width))
-		if i < len(m.messages)-1 {
-			b.WriteString("\n\n")
-		}
-	}
-	return b.String()
-}
-
 func joinSections(parts ...string) string {
 	nonEmpty := make([]string, 0, len(parts))
 	for _, part := range parts {
