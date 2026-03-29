@@ -90,6 +90,22 @@ var (
 		Foreground(lipgloss.Color("#F5F5F5")).
 		Bold(true)
 
+	completionBoxStyle = lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#3A3A3A")).
+		Padding(0, 1).
+		MarginTop(1)
+
+	completionTitleStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#8A8A8A"))
+
+	completionItemStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#D0D0D0"))
+
+	completionSelectedStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#F5F5F5")).
+		Bold(true)
+
 	assistantBulletStyle = lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#D0D0D0")).
 		Bold(true)

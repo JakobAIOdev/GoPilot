@@ -223,8 +223,12 @@ func (m *model) refreshLayout() {
 			m.modelMenuIndex,
 		))
 	}
+	completionHeight := 0
+	if m.hasCompletions() {
+		completionHeight = lipgloss.Height(m.renderCompletions(contentWidth))
+	}
 
-	occupiedHeight := appVerticalPadding + statusHeight + menuHeight + inputHeight + metaHeight + panelChromeHeight
+	occupiedHeight := appVerticalPadding + statusHeight + menuHeight + inputHeight + completionHeight + metaHeight + panelChromeHeight
 	viewportHeight := max(m.height-occupiedHeight, 4)
 	m.viewport.SetHeight(viewportHeight)
 }
@@ -255,6 +259,50 @@ func (m model) renderMenu(width int, title string, hint string, items []string, 
 	}
 
 	return menuStyle.Width(width).Render(strings.Join(lines, "\n"))
+}
+
+func (m model) renderCompletions(width int) string {
+	if !m.hasCompletions() {
+		return ""
+	}
+
+	limit := min(len(m.completions), 8)
+	start := 0
+	if len(m.completions) > limit {
+		start = m.completionIndex - limit/2
+		if start < 0 {
+			start = 0
+		}
+		maxStart := len(m.completions) - limit
+		if start > maxStart {
+			start = maxStart
+		}
+	}
+	end := min(start+limit, len(m.completions))
+	var lines []string
+	lines = append(lines, completionTitleStyle.Render("Suggestions  •  Tab/Enter apply  •  Up/Down select"))
+	lines = append(lines, "")
+
+	for i := start; i < end; i++ {
+		prefix := "  "
+		style := completionItemStyle
+		line := m.completions[i]
+		if description := slashCommandDescription(m.completions[i]); description != "" {
+			line = fmt.Sprintf("%-12s %s", m.completions[i], description)
+		}
+		if i == m.completionIndex {
+			prefix = "> "
+			style = completionSelectedStyle
+		}
+		lines = append(lines, style.Render(prefix+line))
+	}
+
+	if len(m.completions) > limit {
+		lines = append(lines, "")
+		lines = append(lines, completionTitleStyle.Render(fmt.Sprintf("%d-%d of %d", start+1, end, len(m.completions))))
+	}
+
+	return completionBoxStyle.Width(width).Render(strings.Join(lines, "\n"))
 }
 
 func (m model) View() tea.View {
@@ -295,8 +343,9 @@ func (m model) View() tea.View {
 	status := statusStyle.Width(contentWidth).Render(statusText)
 	conversation := panelStyle.Width(contentWidth).Render(m.viewport.View())
 	inputCard := inputFrameStyle.Width(contentWidth).Render(m.input.View())
+	completionBox := m.renderCompletions(contentWidth)
 	inputMeta := inputMetaStyle.Width(contentWidth).Render(
-		fmt.Sprintf("%s  •  %s  •  %s  •  %d attached", assistantLabelStyle.Render("model"), m.currentModel(), assistantLabelStyle.Render("workspace"), m.contextFilesLen()),
+		fmt.Sprintf("%s  •  %s  •  %s  •  %d attached  •  %s", assistantLabelStyle.Render("model"), m.currentModel(), assistantLabelStyle.Render("workspace"), m.contextFilesLen(), m.completionStatus()),
 	)
 
 	menu := ""
@@ -317,6 +366,7 @@ func (m model) View() tea.View {
 		conversation,
 		menu,
 		inputCard,
+		completionBox,
 		inputMeta,
 	)
 

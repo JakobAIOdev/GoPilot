@@ -217,10 +217,43 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cancelStream()
 			}
 			return m, tea.Quit
+		case "up":
+			if m.hasCompletions() {
+				m.cycleCompletion(-1)
+				m.refreshLayout()
+				return m, nil
+			}
+		case "down":
+			if m.hasCompletions() {
+				m.cycleCompletion(1)
+				m.refreshLayout()
+				return m, nil
+			}
+		case "tab":
+			if m.waiting {
+				return m, nil
+			}
+
+			if m.input.Value() == "" {
+				return m, nil
+			}
+
+			m.refreshCompletions()
+			if !m.hasCompletions() {
+				return m, nil
+			}
+
+			if containsString(m.completions, strings.TrimSpace(m.completionBase)) {
+				m.cycleCompletion(1)
+			}
+			m.applySelectedCompletion()
+			m.refreshLayout()
+			return m, nil
 		case "ctrl+n":
 			if m.waiting {
 				return m, nil
 			}
+			m.resetCompletions()
 			m.cycleModel(1)
 			m.refreshLayout()
 			m.syncViewport()
@@ -229,6 +262,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.waiting {
 				return m, nil
 			}
+			m.resetCompletions()
 			m.cycleModel(-1)
 			m.refreshLayout()
 			m.syncViewport()
@@ -238,36 +272,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
+			if m.hasCompletions() {
+				m.applySelectedCompletion()
+				m.refreshLayout()
+				return m, nil
+			}
+
 			userText := strings.TrimSpace(m.input.Value())
 			if userText == "" {
 				return m, nil
 			}
 
 			if strings.HasPrefix(userText, "/") {
-				if m.handleSlashCommand(userText) {
+				cmd := m.handleSlashCommand(userText)
+				if !m.waiting {
+					m.resetCompletions()
 					m.input.SetValue("")
 				}
 				m.refreshLayout()
 				m.syncViewport()
 				m.viewport.GotoBottom()
-				return m, nil
+				return m, cmd
 			}
 
-			m.messages = append(m.messages, chat.Message{From: "User", Content: userText})
-			m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: ""})
-			m.sharedHistory = append(m.sharedHistory, chat.Message{From: "User", Content: userText})
-			m.waiting = true
-			m.streamBuffer.Reset()
-			m.flushScheduled = false
-			m.pendingRequest = chat.Request{
-				Model:          m.currentModel(),
-				Messages:       cloneMessages(m.sharedHistory),
-				WorkspaceRoot:  m.workspaceRoot,
-				ContextFiles:   cloneContextFiles(m.contextFiles),
-				AllowFileEdits: true,
-			}
-			m.retryCount = 0
-			m.input.SetValue("")
+			m.submitPrompt(userText)
 			m.refreshLayout()
 			m.syncViewport()
 			m.viewport.GotoBottom()
@@ -278,7 +306,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	var cmds []tea.Cmd
 	var cmd tea.Cmd
+	prevInput := m.input.Value()
 	m.input, cmd = m.input.Update(msg)
+	if m.input.Value() != prevInput {
+		m.refreshCompletions()
+		m.refreshLayout()
+	}
 	cmds = append(cmds, cmd)
 	m.viewport, cmd = m.viewport.Update(msg)
 	cmds = append(cmds, cmd)
