@@ -205,6 +205,9 @@ func (m *model) refreshLayout() {
 	if m.choosingModel {
 		statusText = fmt.Sprintf("%s  •  selecting model", statusText)
 	}
+	if strings.TrimSpace(m.sessionSaveErr) != "" {
+		statusText = fmt.Sprintf("%s  •  session save failed", statusText)
+	}
 
 	statusHeight := lipgloss.Height(statusStyle.Width(contentWidth).Render(statusText))
 	inputHeight := lipgloss.Height(inputFrameStyle.Width(contentWidth).Render(m.input.View()))
@@ -338,15 +341,20 @@ func (m model) View() tea.View {
 	if m.choosingModel {
 		statusText = fmt.Sprintf("%s  •  selecting model", statusText)
 	}
+	if strings.TrimSpace(m.sessionSaveErr) != "" {
+		statusText = fmt.Sprintf("%s  •  session save failed", statusText)
+	}
 
 	contentWidth := max(m.panelW, 36)
 	status := statusStyle.Width(contentWidth).Render(statusText)
 	conversation := panelStyle.Width(contentWidth).Render(m.viewport.View())
 	inputCard := inputFrameStyle.Width(contentWidth).Render(m.input.View())
 	completionBox := m.renderCompletions(contentWidth)
-	inputMeta := inputMetaStyle.Width(contentWidth).Render(
-		fmt.Sprintf("%s  •  %s  •  %s  •  %d attached  •  %s", assistantLabelStyle.Render("model"), m.currentModel(), assistantLabelStyle.Render("workspace"), m.contextFilesLen(), m.completionStatus()),
-	)
+	metaText := fmt.Sprintf("%s  •  %s  •  %s  •  %d attached  •  %s", assistantLabelStyle.Render("model"), m.currentModel(), assistantLabelStyle.Render("workspace"), m.contextFilesLen(), m.completionStatus())
+	if strings.TrimSpace(m.sessionSaveErr) != "" {
+		metaText = fmt.Sprintf("%s  •  %s", metaText, assistantLabelStyle.Render("session save failed"))
+	}
+	inputMeta := inputMetaStyle.Width(contentWidth).Render(metaText)
 
 	menu := ""
 	if m.choosingModel {

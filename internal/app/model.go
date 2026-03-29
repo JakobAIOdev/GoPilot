@@ -37,7 +37,20 @@ func pendingAssistantMessage(modelName string, attachedCount int) string {
 }
 
 func isPendingAssistantMessage(text string) bool {
-	return strings.HasPrefix(text, "`") && strings.Contains(text, "\n")
+	lines := strings.Split(strings.TrimSpace(text), "\n")
+	if len(lines) < 2 {
+		return false
+	}
+	first := strings.TrimSpace(lines[0])
+	if !strings.HasPrefix(first, "`") || !strings.HasSuffix(first, "`") {
+		return false
+	}
+	switch strings.TrimSpace(lines[1]) {
+	case "Thinking...", "Authenticating...", "Loading project...", "Preparing context...", "Sending request...", "Retrying request...":
+		return true
+	default:
+		return false
+	}
 }
 
 func formatAssistantStatus(modelName string, status string, attachedCount int) string {
@@ -69,6 +82,7 @@ type model struct {
 	sharedHistory  []chat.Message
 	sessionID      string
 	sessionCreated time.Time
+	sessionSaveErr string
 	backend        chat.Backend
 	models         []string
 	modelIndex     int
@@ -301,7 +315,6 @@ func (m *model) resetConversation() {
 func (m *model) applyStoredSession(session storedSession) {
 	m.sessionID = session.ID
 	m.sessionCreated = session.CreatedAt
-	m.workspaceRoot = session.WorkspaceRoot
 	m.messages = cloneMessages(session.Messages)
 	m.sharedHistory = cloneMessages(session.SharedHistory)
 	m.contextFiles = cloneContextFiles(session.ContextFiles)
@@ -324,13 +337,17 @@ func (m *model) applyStoredSession(session storedSession) {
 }
 
 func (m model) storedSession() storedSession {
+	messages := cloneMessages(m.messages)
+	if m.waiting && len(messages) > 0 && messages[len(messages)-1].From == "GoPilot" && isPendingAssistantMessage(messages[len(messages)-1].Content) {
+		messages = messages[:len(messages)-1]
+	}
 	return storedSession{
 		ID:            m.sessionID,
 		Title:         deriveSessionTitle(m.messages),
 		CreatedAt:     m.sessionCreated,
 		WorkspaceRoot: m.workspaceRoot,
 		Model:         m.currentModel(),
-		Messages:      cloneMessages(m.messages),
+		Messages:      messages,
 		SharedHistory: cloneMessages(m.sharedHistory),
 		ContextFiles:  cloneContextFiles(m.contextFiles),
 	}
@@ -343,7 +360,11 @@ func (m *model) saveSession() {
 	if m.sessionCreated.IsZero() {
 		m.sessionCreated = time.Now()
 	}
-	_ = saveStoredSession(m.storedSession())
+	if err := saveStoredSession(m.storedSession()); err != nil {
+		m.sessionSaveErr = err.Error()
+		return
+	}
+	m.sessionSaveErr = ""
 }
 
 func (m *model) startNewSession() {
@@ -378,7 +399,19 @@ func (m *model) loadSessionCommand(target string) error {
 	if err != nil {
 		return err
 	}
+	sessionRoot := strings.TrimSpace(session.WorkspaceRoot)
 	m.applyStoredSession(session)
+	currentRoot := currentWorkingDir()
+	if currentRoot != "" {
+		m.workspaceRoot = currentRoot
+	}
+	if sessionRoot != "" && currentRoot != "" && sessionRoot != currentRoot {
+		m.contextFiles = nil
+		m.messages = append(m.messages, chat.Message{
+			From:    "GoPilot",
+			Content: fmt.Sprintf("Session `%s` was created in `%s`. Keeping the current workspace `%s`, so attached files were cleared.", session.ID, sessionRoot, currentRoot),
+		})
+	}
 	m.resetCompletions()
 	m.input.SetValue("")
 	m.syncViewport()

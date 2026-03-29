@@ -513,17 +513,14 @@ func (b *Backend) postJSON(ctx context.Context, accessToken string, endpoint str
 	if err != nil {
 		return fmt.Errorf("read response: %w", err)
 	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return decodeAPIError(resp.Status, raw)
+	}
+	if len(raw) == 0 {
+		return nil
+	}
 	if err := json.Unmarshal(raw, target); err != nil {
 		return fmt.Errorf("decode response: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		var wrapper struct {
-			Error *apiError `json:"error"`
-		}
-		if json.Unmarshal(raw, &wrapper) == nil && wrapper.Error != nil {
-			return fmt.Errorf("%s (%d %s)", wrapper.Error.Message, wrapper.Error.Code, wrapper.Error.Status)
-		}
-		return fmt.Errorf("request failed: %s", resp.Status)
 	}
 
 	return nil
@@ -548,11 +545,14 @@ func (b *Backend) getJSON(ctx context.Context, accessToken string, endpoint stri
 	if err != nil {
 		return fmt.Errorf("read response: %w", err)
 	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return decodeAPIError(resp.Status, raw)
+	}
+	if len(raw) == 0 {
+		return nil
+	}
 	if err := json.Unmarshal(raw, target); err != nil {
 		return fmt.Errorf("decode response: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("request failed: %s", resp.Status)
 	}
 
 	return nil
@@ -600,16 +600,11 @@ func (b *Backend) openStream(ctx context.Context, accessToken string, endpoint s
 		}
 		if json.Unmarshal(raw, &wrapper) == nil && wrapper.Error != nil {
 			lastErr = fmt.Errorf("%s (%d %s)", wrapper.Error.Message, wrapper.Error.Code, wrapper.Error.Status)
-			if shouldRetryStreamOpen(resp.StatusCode, wrapper.Error) {
-				continue
-			}
 			return nil, lastErr
 		}
 
-		lastErr = fmt.Errorf("stream request failed: %s", resp.Status)
-		if !shouldRetryStreamOpen(resp.StatusCode, nil) {
-			return nil, lastErr
-		}
+		lastErr = decodeAPIError(resp.Status, raw)
+		return nil, lastErr
 	}
 
 	return nil, lastErr
@@ -670,21 +665,20 @@ func newPromptID() string {
 	return fmt.Sprintf("%x", raw[:])
 }
 
-func shouldRetryStreamOpen(statusCode int, apiErr *apiError) bool {
-	if statusCode != http.StatusTooManyRequests {
-		return false
+func decodeAPIError(status string, raw []byte) error {
+	var wrapper struct {
+		Error *apiError `json:"error"`
 	}
-	if apiErr == nil {
-		return true
-	}
-
-	message := strings.ToLower(strings.TrimSpace(apiErr.Message))
-	status := strings.ToUpper(strings.TrimSpace(apiErr.Status))
-	if status != "RESOURCE_EXHAUSTED" {
-		return false
+	if json.Unmarshal(raw, &wrapper) == nil && wrapper.Error != nil {
+		return fmt.Errorf("%s (%d %s)", wrapper.Error.Message, wrapper.Error.Code, wrapper.Error.Status)
 	}
 
-	return strings.Contains(message, "quota will reset after") ||
-		strings.Contains(message, "exhausted your capacity") ||
-		strings.Contains(message, "capacity on this model")
+	body := strings.TrimSpace(string(raw))
+	if body == "" {
+		return fmt.Errorf("request failed: %s", status)
+	}
+	if len(body) > 240 {
+		body = body[:240] + "..."
+	}
+	return fmt.Errorf("request failed: %s: %s", status, body)
 }
