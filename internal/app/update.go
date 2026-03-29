@@ -92,6 +92,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			m.replaceLastAssistantMessage(formatBackendError(msg.event.Err))
+			m.saveSession()
 			m.refreshLayout()
 			m.syncViewport()
 			m.viewport.GotoBottom()
@@ -117,6 +118,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sharedHistory = append(m.sharedHistory, chat.Message{From: "GoPilot", Content: m.messages[len(m.messages)-1].Content})
 			m.pendingRequest = chat.Request{}
 			m.retryCount = 0
+			m.saveSession()
 			m.refreshLayout()
 			m.syncViewport()
 			m.viewport.GotoBottom()
@@ -163,6 +165,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			m.replaceLastAssistantMessage(formatBackendError(msg.err))
+			m.saveSession()
 			m.refreshLayout()
 			m.syncViewport()
 			m.viewport.GotoBottom()

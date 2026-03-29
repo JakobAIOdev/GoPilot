@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/atotto/clipboard"
 	"charm.land/bubbles/v2/textinput"
@@ -66,6 +67,8 @@ type model struct {
 	viewport       viewport.Model
 	messages       []chat.Message
 	sharedHistory  []chat.Message
+	sessionID      string
+	sessionCreated time.Time
 	backend        chat.Backend
 	models         []string
 	modelIndex     int
@@ -116,11 +119,14 @@ func newModel() model {
 		backend:       gemini.NewBackend(),
 		models:        availableModels(),
 		modelIndex:    0,
+		sessionID:     newSessionID(),
+		sessionCreated: time.Now(),
 		workspaceRoot: currentWorkingDir(),
 		messages: []chat.Message{
 			{From: "GoPilot", Content: initialSplash},
 		},
 	}
+	m.saveSession()
 
 	m.syncViewport()
 	return m
@@ -289,6 +295,94 @@ func (m *model) resetConversation() {
 	m.messages = []chat.Message{
 		{From: "GoPilot", Content: fmt.Sprintf("Conversation cleared. %d file(s) still attached.", len(m.contextFiles))},
 	}
+	m.saveSession()
+}
+
+func (m *model) applyStoredSession(session storedSession) {
+	m.sessionID = session.ID
+	m.sessionCreated = session.CreatedAt
+	m.workspaceRoot = session.WorkspaceRoot
+	m.messages = cloneMessages(session.Messages)
+	m.sharedHistory = cloneMessages(session.SharedHistory)
+	m.contextFiles = cloneContextFiles(session.ContextFiles)
+	m.pendingRequest = chat.Request{}
+	m.retryCount = 0
+	m.waiting = false
+	m.stream = nil
+	m.cancelStream = nil
+	m.streamBuffer.Reset()
+	m.flushScheduled = false
+	if len(m.messages) == 0 {
+		m.messages = []chat.Message{{From: "GoPilot", Content: initialSplash}}
+	}
+	for i, modelName := range m.models {
+		if modelName == session.Model {
+			m.modelIndex = i
+			break
+		}
+	}
+}
+
+func (m model) storedSession() storedSession {
+	return storedSession{
+		ID:            m.sessionID,
+		Title:         deriveSessionTitle(m.messages),
+		CreatedAt:     m.sessionCreated,
+		WorkspaceRoot: m.workspaceRoot,
+		Model:         m.currentModel(),
+		Messages:      cloneMessages(m.messages),
+		SharedHistory: cloneMessages(m.sharedHistory),
+		ContextFiles:  cloneContextFiles(m.contextFiles),
+	}
+}
+
+func (m *model) saveSession() {
+	if strings.TrimSpace(m.sessionID) == "" {
+		m.sessionID = newSessionID()
+	}
+	if m.sessionCreated.IsZero() {
+		m.sessionCreated = time.Now()
+	}
+	_ = saveStoredSession(m.storedSession())
+}
+
+func (m *model) startNewSession() {
+	if m.cancelStream != nil {
+		m.cancelStream()
+		m.cancelStream = nil
+	}
+	m.stream = nil
+	m.waiting = false
+	m.sharedHistory = nil
+	m.pendingRequest = chat.Request{}
+	m.retryCount = 0
+	m.contextFiles = nil
+	m.messages = []chat.Message{
+		{From: "GoPilot", Content: initialSplash},
+	}
+	m.sessionID = newSessionID()
+	m.sessionCreated = time.Now()
+	m.resetCompletions()
+	m.input.SetValue("")
+	m.saveSession()
+}
+
+func (m *model) loadSessionCommand(target string) error {
+	var session storedSession
+	var err error
+	if strings.TrimSpace(target) == "" || strings.EqualFold(strings.TrimSpace(target), "latest") {
+		session, err = loadLatestStoredSession()
+	} else {
+		session, err = loadStoredSession(strings.TrimSpace(target))
+	}
+	if err != nil {
+		return err
+	}
+	m.applyStoredSession(session)
+	m.resetCompletions()
+	m.input.SetValue("")
+	m.syncViewport()
+	return nil
 }
 
 func (m *model) replaceLastAssistantMessage(text string) {
@@ -346,6 +440,7 @@ func (m *model) submitPrompt(userText string) {
 	m.retryCount = 0
 	m.resetCompletions()
 	m.input.SetValue("")
+	m.saveSession()
 }
 
 func (m *model) handleSlashCommand(input string) tea.Cmd {
@@ -403,6 +498,7 @@ func (m *model) handleSlashCommand(input string) tea.Cmd {
 			}
 			m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: messages})
 		}
+		m.saveSession()
 
 		if trailingPrompt != "" {
 			m.submitPrompt(trailingPrompt)
@@ -440,6 +536,7 @@ func (m *model) handleSlashCommand(input string) tea.Cmd {
 			message = fmt.Sprintf("%s Updated %d existing attachment(s).", message, updatedCount)
 		}
 		m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: message})
+		m.saveSession()
 		return nil
 	case "/drop":
 		pathArg, _ := splitFirstArgument(strings.TrimSpace(strings.TrimPrefix(input, "/drop")))
@@ -470,9 +567,11 @@ func (m *model) handleSlashCommand(input string) tea.Cmd {
 		}
 
 		m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Removed `%s` from file context.", relPath)})
+		m.saveSession()
 		return nil
 	case "/files":
 		m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: contextFileList(m.contextFiles)})
+		m.saveSession()
 		return nil
 	case "/apply":
 		last := lastAssistantMessage(m.messages)
@@ -501,6 +600,20 @@ func (m *model) handleSlashCommand(input string) tea.Cmd {
 		}
 
 		m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Applied %d file(s):\n- %s", len(written), strings.Join(written, "\n- "))})
+		m.saveSession()
+		return nil
+	case "/load":
+		target := ""
+		if len(fields) > 1 {
+			target = fields[1]
+		}
+		if err := m.loadSessionCommand(target); err != nil {
+			m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Load failed: %v", err)})
+			m.saveSession()
+			return nil
+		}
+		m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Loaded session `%s`.", m.sessionID)})
+		m.saveSession()
 		return nil
 	case "/model":
 		if len(fields) == 1 {
@@ -513,11 +626,18 @@ func (m *model) handleSlashCommand(input string) tea.Cmd {
 			if modelName == selected {
 				m.modelIndex = i
 				m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Active model switched to %s.", m.currentModel())})
+				m.saveSession()
 				return nil
 			}
 		}
 
 		m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Unknown model %q.", selected)})
+		m.saveSession()
+		return nil
+	case "/new":
+		m.startNewSession()
+		m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Started new session `%s`.", m.sessionID)})
+		m.saveSession()
 		return nil
 	case "/clear":
 		m.resetConversation()
@@ -547,16 +667,29 @@ func (m *model) handleSlashCommand(input string) tea.Cmd {
 		}
 
 		m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Copied %s to clipboard.", label)})
+		m.saveSession()
 		return nil
 	case "/plain":
 		if lastAssistantMessage(m.messages) == "" {
 			m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: "Nothing to show in plain view yet."})
+			m.saveSession()
 			return nil
 		}
 		m.togglePlainView()
 		return nil
+	case "/sessions":
+		summaries, err := listStoredSessions()
+		if err != nil {
+			m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Sessions failed: %v", err)})
+			m.saveSession()
+			return nil
+		}
+		m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: formatSessionList(summaries)})
+		m.saveSession()
+		return nil
 	default:
 		m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Unknown command %q.", fields[0])})
+		m.saveSession()
 		return nil
 	}
 }

@@ -31,8 +31,11 @@ var supportedSlashCommands = []slashCommandSpec{
 	{Name: "/copy", Description: "Letzte Antwort kopieren"},
 	{Name: "/drop", Description: "Angehängte Datei entfernen", NeedsValue: true},
 	{Name: "/files", Description: "Angehängte Dateien anzeigen"},
+	{Name: "/load", Description: "Gespeicherte Session laden", NeedsValue: true},
 	{Name: "/model", Description: "Modell auswählen", NeedsValue: true},
+	{Name: "/new", Description: "Neue Session starten"},
 	{Name: "/plain", Description: "Letzte Antwort als Plaintext zeigen"},
+	{Name: "/sessions", Description: "Gespeicherte Sessions anzeigen"},
 }
 
 func cloneMessages(messages []chat.Message) []chat.Message {
@@ -83,7 +86,7 @@ func formatBackendError(err error) string {
 	return fmt.Sprintf("Request failed. %s", text)
 }
 
-func quotaRetryDelay(err error) (time.Duration, bool) {
+func quotaRetryDelay(_ error) (time.Duration, bool) {
 	return 0, false
 }
 
@@ -464,6 +467,18 @@ func autocompleteSuggestions(input string, cursor int, workspaceRoot string, mod
 		}
 		return completeValues("/drop ", "/drop", paths), start, end
 	}
+	if trimmedLeft == "/load" || trimmedLeft == "/load " {
+		summaries, err := listStoredSessions()
+		if err != nil {
+			return nil, start, end
+		}
+		values := make([]string, 0, len(summaries)+1)
+		values = append(values, "latest")
+		for _, session := range summaries {
+			values = append(values, session.ID)
+		}
+		return completeValues("/load ", "/load", values), start, end
+	}
 
 	if len(fields) == 1 && !strings.HasSuffix(trimmedLeft, " ") {
 		return completeCommands(trimmedLeft), start, end
@@ -480,6 +495,17 @@ func autocompleteSuggestions(input string, cursor int, workspaceRoot string, mod
 			paths = append(paths, file.Path)
 		}
 		return completeValues(trimmedLeft, "/drop", paths), start, end
+	case "/load":
+		summaries, err := listStoredSessions()
+		if err != nil {
+			return nil, start, end
+		}
+		values := make([]string, 0, len(summaries)+1)
+		values = append(values, "latest")
+		for _, session := range summaries {
+			values = append(values, session.ID)
+		}
+		return completeValues(trimmedLeft, "/load", values), start, end
 	default:
 		return nil, start, end
 	}
@@ -587,24 +613,6 @@ func listWorkspaceEntries(workspaceRoot string) ([]string, error) {
 
 	sort.Strings(entries)
 	return entries, nil
-}
-
-func nextCompletion(current string, base string, candidates []string) string {
-	if len(candidates) == 0 {
-		return current
-	}
-
-	if current == base {
-		return candidates[0]
-	}
-
-	for i, candidate := range candidates {
-		if candidate == current {
-			return candidates[(i+1)%len(candidates)]
-		}
-	}
-
-	return candidates[0]
 }
 
 func containsString(items []string, target string) bool {
