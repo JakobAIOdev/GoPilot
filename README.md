@@ -22,6 +22,12 @@ A experimental terminal-based AI coding assistant built with Goland powered by G
 - **Copy to clipboard** — Copy full responses or specific code blocks
 - **Exponential backoff** — Automatic retry on rate limits (429) with jitter
 
+## Screenshot
+<p align="center">
+  <img src="./docs/screenshot.png" alt="Terminal-UI" />
+</p>
+
+
 ## Prerequisites
 
 GoPilot uses Google's Gemini API through OAuth credentials. You need:
