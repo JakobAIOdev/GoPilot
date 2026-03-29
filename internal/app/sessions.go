@@ -29,9 +29,10 @@ type storedSession struct {
 }
 
 type sessionSummary struct {
-	ID        string
-	Title     string
-	UpdatedAt time.Time
+	ID           string
+	Title        string
+	UpdatedAt    time.Time
+	MessageCount int
 }
 
 func sessionsDir() (string, error) {
@@ -76,6 +77,10 @@ func deriveSessionTitle(messages []chat.Message) string {
 		}
 		text := strings.Join(strings.Fields(strings.TrimSpace(msg.Content)), " ")
 		if text == "" {
+			continue
+		}
+		// Skip slash commands — not meaningful titles
+		if strings.HasPrefix(text, "/") {
 			continue
 		}
 		if len(text) > sessionTitleLimit {
@@ -152,17 +157,19 @@ func listStoredSessions() ([]sessionSummary, error) {
 			continue
 		}
 		var summary struct {
-			ID        string    `json:"id"`
-			Title     string    `json:"title"`
+			ID       string    `json:"id"`
+			Title    string    `json:"title"`
 			UpdatedAt time.Time `json:"updated_at"`
+			Messages []json.RawMessage `json:"messages"`
 		}
 		if err := json.Unmarshal(data, &summary); err != nil {
 			continue
 		}
 		summaries = append(summaries, sessionSummary{
-			ID:        summary.ID,
-			Title:     summary.Title,
-			UpdatedAt: summary.UpdatedAt,
+			ID:           summary.ID,
+			Title:        summary.Title,
+			UpdatedAt:    summary.UpdatedAt,
+			MessageCount: len(summary.Messages),
 		})
 	}
 
@@ -170,6 +177,41 @@ func listStoredSessions() ([]sessionSummary, error) {
 		return summaries[i].UpdatedAt.After(summaries[j].UpdatedAt)
 	})
 	return summaries, nil
+}
+
+func deleteStoredSession(id string) error {
+	path, err := sessionFilePath(id)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("session %q not found", id)
+		}
+		return fmt.Errorf("delete session: %w", err)
+	}
+	return nil
+}
+
+func deleteAllStoredSessions() (int, error) {
+	dir, err := ensureSessionsDir()
+	if err != nil {
+		return 0, err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, fmt.Errorf("read sessions dir: %w", err)
+	}
+	count := 0
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, entry.Name())); err == nil {
+			count++
+		}
+	}
+	return count, nil
 }
 
 func loadLatestStoredSession() (storedSession, error) {
