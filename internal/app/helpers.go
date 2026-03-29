@@ -26,19 +26,21 @@ type slashCommandSpec struct {
 }
 
 var supportedSlashCommands = []slashCommandSpec{
-	{Name: "/add", Description: "Datei als Kontext anhängen", NeedsValue: true},
-	{Name: "/apply", Description: "Letzten Dateivorschlag anwenden"},
-	{Name: "/clear", Description: "Konversation zurücksetzen"},
-	{Name: "/codebase", Description: "Ganzes Working Directory anhängen"},
-	{Name: "/copy", Description: "Letzte Antwort kopieren"},
-	{Name: "/drop", Description: "Angehängte Datei entfernen", NeedsValue: true},
-	{Name: "/files", Description: "Angehängte Dateien anzeigen"},
-	{Name: "/load", Description: "Gespeicherte Session laden", NeedsValue: true},
-	{Name: "/model", Description: "Modell auswählen", NeedsValue: true},
-	{Name: "/new", Description: "Neue Session starten"},
-	{Name: "/plain", Description: "Letzte Antwort als Plaintext zeigen"},
-	{Name: "/sessions", Description: "Gespeicherte Sessions anzeigen"},
-	{Name: "/undo", Description: "Letzte Session-Änderungen rückgängig machen", NeedsValue: true},
+	{Name: "/add", Description: "Attach a file as context", NeedsValue: true},
+	{Name: "/apply", Description: "Apply proposed file edits"},
+	{Name: "/clear", Description: "Reset conversation"},
+	{Name: "/codebase", Description: "Attach entire working directory"},
+	{Name: "/copy", Description: "Copy last response to clipboard"},
+	{Name: "/delete", Description: "Delete a saved session", NeedsValue: true},
+	{Name: "/drop", Description: "Remove an attached file", NeedsValue: true},
+	{Name: "/files", Description: "List attached files"},
+	{Name: "/help", Description: "Show available commands"},
+	{Name: "/load", Description: "Load a saved session", NeedsValue: true},
+	{Name: "/model", Description: "Select a model", NeedsValue: true},
+	{Name: "/new", Description: "Start a new session"},
+	{Name: "/plain", Description: "Show last response as plain text"},
+	{Name: "/sessions", Description: "List saved sessions"},
+	{Name: "/undo", Description: "Revert last applied changes", NeedsValue: true},
 }
 
 func cloneMessages(messages []chat.Message) []chat.Message {
@@ -78,18 +80,40 @@ func formatBackendError(err error) string {
 
 	text := strings.TrimSpace(err.Error())
 
-	if strings.Contains(text, "RESOURCE_EXHAUSTED") {
-		return fmt.Sprintf("API error: %s Please wait and try again later. You can also use `Ctrl+N` or `/model` to switch models.", text)
+	if strings.Contains(text, "RESOURCE_EXHAUSTED") || strings.Contains(text, "No capacity available") {
+		return fmt.Sprintf("API error: %s\n\nThis model may be temporarily at capacity. Use `Ctrl+N` or `/model` to switch to a different model (e.g. a flash variant).", text)
 	}
 
 	if strings.Contains(text, "429") {
-		return fmt.Sprintf("API error: %s Please wait and try again later.", text)
+		return fmt.Sprintf("API error: %s\n\nRate limit hit. Please wait a moment or switch models with `/model`.", text)
 	}
 
-	return fmt.Sprintf("Request failed. %s", text)
+	if strings.Contains(text, "503") || strings.Contains(text, "UNAVAILABLE") {
+		return fmt.Sprintf("API error: %s\n\nThe server is temporarily unavailable. Retrying automatically.", text)
+	}
+
+	return fmt.Sprintf("Request failed: %s", text)
 }
 
-func quotaRetryDelay(_ error) (time.Duration, bool) {
+func quotaRetryDelay(err error) (time.Duration, bool) {
+	if err == nil {
+		return 0, false
+	}
+
+	text := strings.TrimSpace(err.Error())
+
+	if strings.Contains(text, "RESOURCE_EXHAUSTED") || strings.Contains(text, "No capacity available") {
+		return 10 * time.Second, true
+	}
+
+	if strings.Contains(text, "429") {
+		return 8 * time.Second, true
+	}
+
+	if strings.Contains(text, "503") || strings.Contains(text, "UNAVAILABLE") {
+		return 4 * time.Second, true
+	}
+
 	return 0, false
 }
 
@@ -116,7 +140,16 @@ func lastAssistantMessage(messages []chat.Message) string {
 }
 
 func extractFirstFencedCodeBlock(text string) string {
+	blocks := extractAllFencedCodeBlocks(text)
+	if len(blocks) == 0 {
+		return ""
+	}
+	return blocks[0]
+}
+
+func extractAllFencedCodeBlocks(text string) []string {
 	lines := strings.Split(text, "\n")
+	var blocks []string
 	var codeLines []string
 	inCode := false
 
@@ -124,20 +157,46 @@ func extractFirstFencedCodeBlock(text string) string {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "```") {
 			if inCode {
-				return strings.Join(codeLines, "\n")
+				blocks = append(blocks, strings.Join(codeLines, "\n"))
+				inCode = false
+				continue
 			}
-
+			// Skip gopilot-file blocks
+			if strings.HasPrefix(strings.TrimPrefix(trimmed, "```"), "gopilot-file") {
+				inCode = true
+				codeLines = nil
+				continue
+			}
 			inCode = true
 			codeLines = nil
 			continue
 		}
-
 		if inCode {
 			codeLines = append(codeLines, line)
 		}
 	}
+	return blocks
+}
 
-	return ""
+func formatHelpText() string {
+	var lines []string
+	lines = append(lines, "Available Commands")
+	lines = append(lines, "")
+	for _, cmd := range supportedSlashCommands {
+		if cmd.NeedsValue {
+			lines = append(lines, fmt.Sprintf("  %-16s %s", cmd.Name+" <arg>", cmd.Description))
+		} else {
+			lines = append(lines, fmt.Sprintf("  %-16s %s", cmd.Name, cmd.Description))
+		}
+	}
+	lines = append(lines, "")
+	lines = append(lines, "Keyboard Shortcuts")
+	lines = append(lines, "")
+	lines = append(lines, "  Enter          Send prompt")
+	lines = append(lines, "  Tab            Autocomplete")
+	lines = append(lines, "  Ctrl+N/P       Cycle models")
+	lines = append(lines, "  Esc            Quit")
+	return strings.Join(lines, "\n")
 }
 
 func plainViewContent(text string) string {
@@ -256,11 +315,64 @@ func loadContextFile(workspaceRoot string, inputPath string) (chat.ContextFile, 
 		return chat.ContextFile{}, fmt.Errorf("read %s: %w", relPath, err)
 	}
 
+	if isBinaryFile(relPath, data) {
+		return chat.ContextFile{}, fmt.Errorf("%s appears to be a binary file and cannot be used as context", relPath)
+	}
+
 	return chat.ContextFile{
 		Path:     relPath,
 		Language: detectLanguage(relPath),
 		Content:  string(data),
 	}, nil
+}
+
+var binaryExtensions = map[string]bool{
+	".exe": true, ".dll": true, ".so": true, ".dylib": true,
+	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".bmp": true, ".ico": true, ".webp": true,
+	".mp3": true, ".mp4": true, ".wav": true, ".avi": true, ".mov": true, ".mkv": true,
+	".zip": true, ".tar": true, ".gz": true, ".bz2": true, ".xz": true, ".7z": true, ".rar": true,
+	".wasm": true, ".o": true, ".a": true, ".lib": true,
+	".pdf": true, ".doc": true, ".docx": true, ".xls": true, ".xlsx": true,
+	".ttf": true, ".otf": true, ".woff": true, ".woff2": true, ".eot": true,
+	".class": true, ".pyc": true, ".pyo": true,
+	".sqlite": true, ".db": true,
+}
+
+func isBinaryFile(path string, data []byte) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	if binaryExtensions[ext] {
+		return true
+	}
+	checkLen := len(data)
+	if checkLen > 512 {
+		checkLen = 512
+	}
+	for _, b := range data[:checkLen] {
+		if b == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+var skipDirs = map[string]bool{
+	".git": true, ".hg": true, ".svn": true,
+	"node_modules": true, "vendor": true, ".venv": true, "venv": true,
+	"__pycache__": true, ".mypy_cache": true,
+	".next": true, ".nuxt": true, "dist": true, "build": true, "target": true,
+	".gopilot": true, ".gopilot-backup": true,
+	".idea": true, ".vscode": true,
+}
+
+func shouldSkipDir(name string) bool {
+	if skipDirs[name] {
+		return true
+	}
+	// Skip hidden directories (dotfiles) except "." itself
+	if strings.HasPrefix(name, ".") && len(name) > 1 {
+		return true
+	}
+	return false
 }
 
 func loadContextTargets(workspaceRoot string, inputPath string) ([]chat.ContextFile, error) {
@@ -288,8 +400,7 @@ func loadContextTargets(workspaceRoot string, inputPath string) ([]chat.ContextF
 			return walkErr
 		}
 		if d.IsDir() {
-			name := d.Name()
-			if name == ".git" || name == "node_modules" {
+			if shouldSkipDir(d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -561,6 +672,18 @@ func autocompleteSuggestions(input string, cursor int, workspaceRoot string, mod
 	if trimmedLeft == "/undo" || trimmedLeft == "/undo " {
 		return completeValues("/undo ", "/undo", []string{"session"}), start, end
 	}
+	if trimmedLeft == "/delete" || trimmedLeft == "/delete " {
+		summaries, err := listStoredSessions()
+		if err != nil {
+			return nil, start, end
+		}
+		values := make([]string, 0, len(summaries)+1)
+		values = append(values, "all")
+		for _, session := range summaries {
+			values = append(values, session.ID)
+		}
+		return completeValues("/delete ", "/delete", values), start, end
+	}
 
 	if len(fields) == 1 && !strings.HasSuffix(trimmedLeft, " ") {
 		return completeCommands(trimmedLeft), start, end
@@ -590,6 +713,17 @@ func autocompleteSuggestions(input string, cursor int, workspaceRoot string, mod
 		return completeValues(trimmedLeft, "/load", values), start, end
 	case "/undo":
 		return completeValues(trimmedLeft, "/undo", []string{"session"}), start, end
+	case "/delete":
+		summaries, err := listStoredSessions()
+		if err != nil {
+			return nil, start, end
+		}
+		values := make([]string, 0, len(summaries)+1)
+		values = append(values, "all")
+		for _, session := range summaries {
+			values = append(values, session.ID)
+		}
+		return completeValues(trimmedLeft, "/delete", values), start, end
 	default:
 		return nil, start, end
 	}
@@ -634,9 +768,9 @@ func splitInlineSlashCommands(input string) ([]string, string) {
 		}
 
 		switch field {
-		case "/codebase", "/files", "/apply", "/new", "/clear", "/plain", "/sessions":
+		case "/codebase", "/files", "/apply", "/new", "/clear", "/plain", "/sessions", "/help":
 			commands = append(commands, field)
-		case "/add", "/drop", "/load", "/model":
+		case "/add", "/drop", "/load", "/model", "/delete":
 			command, nextIndex, ok := consumeArg(i, field)
 			if !ok {
 				promptWords = append(promptWords, field)
@@ -721,7 +855,7 @@ func listWorkspaceEntries(workspaceRoot string) ([]string, error) {
 
 		name := d.Name()
 		if d.IsDir() {
-			if name == ".git" || name == "node_modules" {
+			if shouldSkipDir(name) {
 				return filepath.SkipDir
 			}
 			if path != rootAbs {
