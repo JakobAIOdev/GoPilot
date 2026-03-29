@@ -3,12 +3,39 @@ package app
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
 	"github.com/JakobAIOdev/GoPilot/internal/chat"
 )
+
+func relativeTime(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		m := int(d.Minutes())
+		if m == 1 {
+			return "1 min ago"
+		}
+		return fmt.Sprintf("%d min ago", m)
+	case d < 24*time.Hour:
+		h := int(d.Hours())
+		if h == 1 {
+			return "1 hour ago"
+		}
+		return fmt.Sprintf("%d hours ago", h)
+	case d < 48*time.Hour:
+		return "yesterday"
+	case d < 7*24*time.Hour:
+		return fmt.Sprintf("%d days ago", int(d.Hours()/24))
+	default:
+		return t.Format("2006-01-02")
+	}
+}
 
 const appVerticalPadding = 2
 const classicLayoutWidth = 104
@@ -154,16 +181,27 @@ func renderMarkdownText(text string, width int) string {
 
 		if strings.HasPrefix(trimmed, "#") {
 			title := strings.TrimSpace(strings.TrimLeft(trimmed, "#"))
-			renderedLines = append(renderedLines, assistantHeadingStyle.Render(cleanInlineMarkdown(title)))
+			renderedLines = append(renderedLines, assistantHeadingStyle.Render(renderInlineMarkdown(title)))
 			continue
 		}
 
 		if strings.HasPrefix(trimmed, "* ") || strings.HasPrefix(trimmed, "- ") {
-			renderedLines = append(renderedLines, assistantBulletStyle.Render("•")+" "+cleanInlineMarkdown(strings.TrimSpace(trimmed[2:])))
+			renderedLines = append(renderedLines, assistantBulletStyle.Render("•")+" "+renderInlineMarkdown(strings.TrimSpace(trimmed[2:])))
 			continue
 		}
 
-		renderedLines = append(renderedLines, cleanInlineMarkdown(trimmed))
+		// Numbered list: 1. item, 2. item, etc.
+		if len(trimmed) >= 3 && trimmed[0] >= '0' && trimmed[0] <= '9' {
+			dotIdx := strings.Index(trimmed, ". ")
+			if dotIdx > 0 && dotIdx <= 3 {
+				number := trimmed[:dotIdx+1]
+				rest := strings.TrimSpace(trimmed[dotIdx+2:])
+				renderedLines = append(renderedLines, assistantBulletStyle.Render(number)+" "+renderInlineMarkdown(rest))
+				continue
+			}
+		}
+
+		renderedLines = append(renderedLines, renderInlineMarkdown(trimmed))
 	}
 
 	return assistantTextStyle.Width(width).Render(strings.Join(renderedLines, "\n"))
@@ -242,13 +280,46 @@ func (m model) renderInputPreview(width int) string {
 	return editProposalBoxStyle.Width(width).Render(strings.Join(body, "\n\n"))
 }
 
-func cleanInlineMarkdown(text string) string {
-	replacer := strings.NewReplacer(
-		"**", "",
-		"__", "",
-		"`", "",
-	)
-	return replacer.Replace(text)
+func renderInlineMarkdown(text string) string {
+	var result strings.Builder
+	runes := []rune(text)
+	i := 0
+	for i < len(runes) {
+		// Inline code: `code`
+		if runes[i] == '`' {
+			end := -1
+			for j := i + 1; j < len(runes); j++ {
+				if runes[j] == '`' {
+					end = j
+					break
+				}
+			}
+			if end > i+1 {
+				result.WriteString(inlineCodeStyle.Render(string(runes[i+1 : end])))
+				i = end + 1
+				continue
+			}
+		}
+		// Bold: **text** or __text__
+		if i+1 < len(runes) && ((runes[i] == '*' && runes[i+1] == '*') || (runes[i] == '_' && runes[i+1] == '_')) {
+			delim := runes[i]
+			end := -1
+			for j := i + 2; j+1 < len(runes); j++ {
+				if runes[j] == delim && runes[j+1] == delim {
+					end = j
+					break
+				}
+			}
+			if end > i+2 {
+				result.WriteString(inlineBoldStyle.Render(string(runes[i+2 : end])))
+				i = end + 2
+				continue
+			}
+		}
+		result.WriteRune(runes[i])
+		i++
+	}
+	return result.String()
 }
 
 func (m *model) syncViewport() {
@@ -262,17 +333,7 @@ func (m *model) syncViewport() {
 	m.viewport.SetContent(b.String())
 }
 
-func (m *model) refreshLayout() {
-	if m.width <= 0 || m.height <= 0 {
-		return
-	}
-
-	contentWidth := min(max(m.panelW, 36), classicLayoutWidth)
-	inputWidth := max(contentWidth-4, 20)
-
-	m.viewport.SetWidth(max(contentWidth-4, 28))
-	m.input.SetWidth(inputWidth)
-
+func (m model) statusText() string {
 	statusText := fmt.Sprintf("%d msgs  •  Enter send  •  /model  •  /add  •  /files  •  /apply  •  /copy  •  /plain  •  Esc quit", len(m.messages))
 	if m.waiting {
 		statusText = fmt.Sprintf("%s  •  streaming from %s", statusText, m.currentModel())
@@ -286,6 +347,21 @@ func (m *model) refreshLayout() {
 	if hint := pendingApplyHint(m.messages); hint != "" {
 		statusText = fmt.Sprintf("%s  •  %s", statusText, hint)
 	}
+	return statusText
+}
+
+func (m *model) refreshLayout() {
+	if m.width <= 0 || m.height <= 0 {
+		return
+	}
+
+	contentWidth := min(max(m.panelW, 36), classicLayoutWidth)
+	inputWidth := max(contentWidth-4, 20)
+
+	m.viewport.SetWidth(max(contentWidth-4, 28))
+	m.input.SetWidth(inputWidth)
+
+	statusText := m.statusText()
 
 	statusHeight := lipgloss.Height(statusStyle.Width(contentWidth).Render(statusText))
 	inputHeight := lipgloss.Height(inputFrameStyle.Width(contentWidth).Render(m.input.View()))
@@ -451,7 +527,7 @@ func (m model) renderSessionMenu(width int) string {
 			prefix = "> "
 			style = menuSelectedStyle
 		}
-		label := fmt.Sprintf("%s%s  •  %s  •  %s", prefix, items[i].ID, items[i].UpdatedAt.Format("2006-01-02 15:04"), items[i].Title)
+		label := fmt.Sprintf("%s%s  •  %s  •  %d msgs  •  %s", prefix, items[i].ID, relativeTime(items[i].UpdatedAt), items[i].MessageCount, items[i].Title)
 		lines = append(lines, style.Render(label))
 	}
 
@@ -487,23 +563,9 @@ func (m model) View() tea.View {
 		return v
 	}
 
-	statusText := fmt.Sprintf("%d msgs  •  Enter send  •  /model  •  /add  •  /files  •  /apply  •  /copy  •  /plain  •  Esc quit", len(m.messages))
-	if m.waiting {
-		statusText = fmt.Sprintf("%s  •  streaming from %s", statusText, m.currentModel())
-	}
-	if m.choosingModel {
-		statusText = fmt.Sprintf("%s  •  selecting model", statusText)
-	}
-	if strings.TrimSpace(m.sessionSaveErr) != "" {
-		statusText = fmt.Sprintf("%s  •  session save failed", statusText)
-	}
-	if hint := pendingApplyHint(m.messages); hint != "" {
-		statusText = fmt.Sprintf("%s  •  %s", statusText, hint)
-	}
-
 	contentWidth := max(m.panelW, 36)
-	status := statusStyle.Width(contentWidth).Render(statusText)
-	conversation := m.renderConversation(max(contentWidth-2, 28))
+	status := statusStyle.Width(contentWidth).Render(m.statusText())
+	conversation := m.viewport.View()
 	inputPreview := m.renderInputPreview(contentWidth)
 	inputCard := inputFrameStyle.Width(contentWidth).Render(m.input.View())
 	completionBox := m.renderCompletions(contentWidth)
