@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -16,6 +17,7 @@ import (
 )
 
 var gopilotFileBlockPattern = regexp.MustCompile("(?s)```gopilot-file\\s+path=([^\\n]+)\\n(.*?)```")
+var errNoProposedFileEdits = errors.New("no `gopilot-file` blocks found in the last response")
 
 type slashCommandSpec struct {
 	Name        string
@@ -36,6 +38,7 @@ var supportedSlashCommands = []slashCommandSpec{
 	{Name: "/new", Description: "Neue Session starten"},
 	{Name: "/plain", Description: "Letzte Antwort als Plaintext zeigen"},
 	{Name: "/sessions", Description: "Gespeicherte Sessions anzeigen"},
+	{Name: "/undo", Description: "Letzte Session-Änderungen rückgängig machen", NeedsValue: true},
 }
 
 func cloneMessages(messages []chat.Message) []chat.Message {
@@ -356,13 +359,30 @@ type proposedFileEdit struct {
 	Content string
 }
 
+type appliedFileEdit struct {
+	Path   string
+	Action string
+}
+
+type undoEntry struct {
+	Path         string `json:"path"`
+	ExistedBefore bool   `json:"existed_before"`
+	PreviousContent string `json:"previous_content"`
+}
+
+type undoBatch struct {
+	AppliedAt time.Time   `json:"applied_at"`
+	Entries   []undoEntry `json:"entries"`
+}
+
 func parseProposedFileEdits(text string) ([]proposedFileEdit, error) {
 	matches := gopilotFileBlockPattern.FindAllStringSubmatch(text, -1)
 	if len(matches) == 0 {
-		return nil, fmt.Errorf("no `gopilot-file` blocks found in the last response")
+		return nil, errNoProposedFileEdits
 	}
 
 	edits := make([]proposedFileEdit, 0, len(matches))
+	seen := make(map[string]string, len(matches))
 	for _, match := range matches {
 		path := strings.TrimSpace(match[1])
 		if path == "" {
@@ -370,6 +390,13 @@ func parseProposedFileEdits(text string) ([]proposedFileEdit, error) {
 		}
 
 		content := strings.ReplaceAll(match[2], "\r\n", "\n")
+		if existing, ok := seen[path]; ok {
+			if existing != content {
+				return nil, fmt.Errorf("found multiple edit blocks for %s with different contents", path)
+			}
+			continue
+		}
+		seen[path] = content
 		edits = append(edits, proposedFileEdit{
 			Path:    path,
 			Content: content,
@@ -379,30 +406,82 @@ func parseProposedFileEdits(text string) ([]proposedFileEdit, error) {
 	return edits, nil
 }
 
-func applyProposedFileEdits(workspaceRoot string, text string) ([]string, error) {
+func applyProposedFileEdits(workspaceRoot string, text string) ([]appliedFileEdit, undoBatch, error) {
 	edits, err := parseProposedFileEdits(text)
 	if err != nil {
-		return nil, err
+		return nil, undoBatch{}, err
 	}
 
-	written := make([]string, 0, len(edits))
+	applied := make([]appliedFileEdit, 0, len(edits))
+	undo := undoBatch{AppliedAt: time.Now(), Entries: make([]undoEntry, 0, len(edits))}
 	for _, edit := range edits {
 		relPath, absPath, err := normalizeWorkspacePath(workspaceRoot, edit.Path)
 		if err != nil {
-			return nil, err
+			return nil, undoBatch{}, err
+		}
+
+		action := "created"
+		var previousContent string
+		existedBefore := false
+		if existing, err := os.ReadFile(absPath); err == nil {
+			existedBefore = true
+			previousContent = string(existing)
+			if string(existing) == edit.Content {
+				applied = append(applied, appliedFileEdit{Path: relPath, Action: "unchanged"})
+				continue
+			}
+			action = "updated"
+		} else if !os.IsNotExist(err) {
+			return nil, undoBatch{}, fmt.Errorf("read existing %s: %w", relPath, err)
 		}
 
 		if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
-			return nil, fmt.Errorf("create parent directory for %s: %w", relPath, err)
+			return nil, undoBatch{}, fmt.Errorf("create parent directory for %s: %w", relPath, err)
 		}
 		if err := os.WriteFile(absPath, []byte(edit.Content), 0o644); err != nil {
-			return nil, fmt.Errorf("write %s: %w", relPath, err)
+			return nil, undoBatch{}, fmt.Errorf("write %s: %w", relPath, err)
 		}
-		written = append(written, relPath)
+		applied = append(applied, appliedFileEdit{Path: relPath, Action: action})
+		undo.Entries = append(undo.Entries, undoEntry{
+			Path:            relPath,
+			ExistedBefore:   existedBefore,
+			PreviousContent: previousContent,
+		})
 	}
 
-	sort.Strings(written)
-	return written, nil
+	sort.Slice(applied, func(i, j int) bool {
+		return applied[i].Path < applied[j].Path
+	})
+	sort.Slice(undo.Entries, func(i, j int) bool {
+		return undo.Entries[i].Path < undo.Entries[j].Path
+	})
+	return applied, undo, nil
+}
+
+func revertUndoBatch(workspaceRoot string, batch undoBatch) ([]string, error) {
+	reverted := make([]string, 0, len(batch.Entries))
+	for i := len(batch.Entries) - 1; i >= 0; i-- {
+		entry := batch.Entries[i]
+		relPath, absPath, err := normalizeWorkspacePath(workspaceRoot, entry.Path)
+		if err != nil {
+			return nil, err
+		}
+		if entry.ExistedBefore {
+			if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+				return nil, fmt.Errorf("create parent directory for %s: %w", relPath, err)
+			}
+			if err := os.WriteFile(absPath, []byte(entry.PreviousContent), 0o644); err != nil {
+				return nil, fmt.Errorf("restore %s: %w", relPath, err)
+			}
+		} else {
+			if err := os.Remove(absPath); err != nil && !os.IsNotExist(err) {
+				return nil, fmt.Errorf("remove %s: %w", relPath, err)
+			}
+		}
+		reverted = append(reverted, relPath)
+	}
+	sort.Strings(reverted)
+	return reverted, nil
 }
 
 func activeCompletionSegment(input string, cursor int) (string, int, int, bool) {
@@ -479,6 +558,9 @@ func autocompleteSuggestions(input string, cursor int, workspaceRoot string, mod
 		}
 		return completeValues("/load ", "/load", values), start, end
 	}
+	if trimmedLeft == "/undo" || trimmedLeft == "/undo " {
+		return completeValues("/undo ", "/undo", []string{"session"}), start, end
+	}
 
 	if len(fields) == 1 && !strings.HasSuffix(trimmedLeft, " ") {
 		return completeCommands(trimmedLeft), start, end
@@ -506,6 +588,8 @@ func autocompleteSuggestions(input string, cursor int, workspaceRoot string, mod
 			values = append(values, session.ID)
 		}
 		return completeValues(trimmedLeft, "/load", values), start, end
+	case "/undo":
+		return completeValues(trimmedLeft, "/undo", []string{"session"}), start, end
 	default:
 		return nil, start, end
 	}
@@ -520,6 +604,60 @@ func completeCommands(input string) []string {
 	}
 	sort.Strings(matches)
 	return matches
+}
+
+func splitInlineSlashCommands(input string) ([]string, string) {
+	fields := strings.Fields(input)
+	if len(fields) == 0 {
+		return nil, ""
+	}
+
+	var commands []string
+	var promptWords []string
+
+	consumeArg := func(i int, command string) (string, int, bool) {
+		if i+1 >= len(fields) {
+			return command, i, false
+		}
+		next := fields[i+1]
+		if strings.HasPrefix(next, "/") {
+			return command, i, false
+		}
+		return command + " " + next, i + 1, true
+	}
+
+	for i := 0; i < len(fields); i++ {
+		field := fields[i]
+		if !strings.HasPrefix(field, "/") {
+			promptWords = append(promptWords, field)
+			continue
+		}
+
+		switch field {
+		case "/codebase", "/files", "/apply", "/new", "/clear", "/plain", "/sessions":
+			commands = append(commands, field)
+		case "/add", "/drop", "/load", "/model":
+			command, nextIndex, ok := consumeArg(i, field)
+			if !ok {
+				promptWords = append(promptWords, field)
+				continue
+			}
+			commands = append(commands, command)
+			i = nextIndex
+		case "/undo", "/copy":
+			command, nextIndex, ok := consumeArg(i, field)
+			if ok {
+				commands = append(commands, command)
+				i = nextIndex
+			} else {
+				commands = append(commands, field)
+			}
+		default:
+			promptWords = append(promptWords, field)
+		}
+	}
+
+	return commands, strings.Join(promptWords, " ")
 }
 
 func slashCommandDescription(command string) string {

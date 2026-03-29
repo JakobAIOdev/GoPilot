@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -80,6 +81,7 @@ type model struct {
 	viewport       viewport.Model
 	messages       []chat.Message
 	sharedHistory  []chat.Message
+	undoHistory    []undoBatch
 	sessionID      string
 	sessionCreated time.Time
 	sessionSaveErr string
@@ -91,8 +93,12 @@ type model struct {
 	ready          bool
 	waiting        bool
 	choosingModel  bool
+	choosingSession bool
 	plainView      bool
 	modelMenuIndex int
+	sessionMenuIndex int
+	sessionFilter    string
+	sessionSummaries []sessionSummary
 	width          int
 	height         int
 	panelW         int
@@ -285,6 +291,65 @@ func (m *model) closeModelMenu() {
 	m.input.SetValue("")
 }
 
+func (m *model) openSessionMenu() {
+	summaries, err := listStoredSessions()
+	if err != nil {
+		m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Sessions failed: %v", err)})
+		m.saveSession()
+		return
+	}
+	m.choosingSession = true
+	m.sessionSummaries = summaries
+	m.sessionMenuIndex = 0
+	m.sessionFilter = ""
+}
+
+func (m *model) closeSessionMenu() {
+	m.choosingSession = false
+	m.sessionMenuIndex = 0
+	m.sessionFilter = ""
+	m.sessionSummaries = nil
+}
+
+func (m model) filteredSessionSummaries() []sessionSummary {
+	if len(m.sessionSummaries) == 0 {
+		return nil
+	}
+	filter := strings.ToLower(strings.TrimSpace(m.sessionFilter))
+	if filter == "" {
+		return m.sessionSummaries
+	}
+
+	filtered := make([]sessionSummary, 0, len(m.sessionSummaries))
+	for _, session := range m.sessionSummaries {
+		if strings.Contains(strings.ToLower(session.ID), filter) || strings.Contains(strings.ToLower(session.Title), filter) {
+			filtered = append(filtered, session)
+		}
+	}
+	return filtered
+}
+
+func (m *model) cycleSessionMenu(step int) {
+	items := m.filteredSessionSummaries()
+	if len(items) == 0 {
+		m.sessionMenuIndex = 0
+		return
+	}
+	m.sessionMenuIndex = (m.sessionMenuIndex + step + len(items)) % len(items)
+}
+
+func (m *model) updateSessionFilter(next string) {
+	m.sessionFilter = next
+	items := m.filteredSessionSummaries()
+	if len(items) == 0 {
+		m.sessionMenuIndex = 0
+		return
+	}
+	if m.sessionMenuIndex >= len(items) {
+		m.sessionMenuIndex = 0
+	}
+}
+
 func (m *model) togglePlainView() {
 	m.plainView = !m.plainView
 }
@@ -318,6 +383,7 @@ func (m *model) applyStoredSession(session storedSession) {
 	m.messages = cloneMessages(session.Messages)
 	m.sharedHistory = cloneMessages(session.SharedHistory)
 	m.contextFiles = cloneContextFiles(session.ContextFiles)
+	m.undoHistory = append([]undoBatch(nil), session.UndoHistory...)
 	m.pendingRequest = chat.Request{}
 	m.retryCount = 0
 	m.waiting = false
@@ -350,6 +416,7 @@ func (m model) storedSession() storedSession {
 		Messages:      messages,
 		SharedHistory: cloneMessages(m.sharedHistory),
 		ContextFiles:  cloneContextFiles(m.contextFiles),
+		UndoHistory:   append([]undoBatch(nil), m.undoHistory...),
 	}
 }
 
@@ -378,6 +445,7 @@ func (m *model) startNewSession() {
 	m.pendingRequest = chat.Request{}
 	m.retryCount = 0
 	m.contextFiles = nil
+	m.undoHistory = nil
 	m.messages = []chat.Message{
 		{From: "GoPilot", Content: initialSplash},
 	}
@@ -415,6 +483,76 @@ func (m *model) loadSessionCommand(target string) error {
 	m.resetCompletions()
 	m.input.SetValue("")
 	m.syncViewport()
+	return nil
+}
+
+func (m *model) refreshAttachedContext(paths []string) {
+	for i, file := range m.contextFiles {
+		for _, path := range paths {
+			if file.Path != path {
+				continue
+			}
+			updated, loadErr := loadContextFile(m.workspaceRoot, path)
+			if loadErr == nil {
+				m.contextFiles[i] = updated
+			}
+			break
+		}
+	}
+}
+
+func (m *model) applyEditsFromText(text string, auto bool) error {
+	applied, undoBatch, err := applyProposedFileEdits(m.workspaceRoot, text)
+	if err != nil {
+		return err
+	}
+	if len(applied) == 0 {
+		return nil
+	}
+	if len(undoBatch.Entries) > 0 {
+		m.undoHistory = append(m.undoHistory, undoBatch)
+	}
+
+	changedPaths := make([]string, 0, len(applied))
+	created := make([]string, 0, len(applied))
+	updated := make([]string, 0, len(applied))
+	unchanged := make([]string, 0, len(applied))
+	for _, result := range applied {
+		if result.Action != "unchanged" {
+			changedPaths = append(changedPaths, result.Path)
+		}
+		switch result.Action {
+		case "created":
+			created = append(created, result.Path)
+		case "updated":
+			updated = append(updated, result.Path)
+		case "unchanged":
+			unchanged = append(unchanged, result.Path)
+		}
+	}
+	m.refreshAttachedContext(changedPaths)
+
+	var lines []string
+	if auto {
+		lines = append(lines, fmt.Sprintf("Applied generated changes to %d file(s).", len(applied)))
+	} else {
+		lines = append(lines, fmt.Sprintf("Apply finished for %d file(s).", len(applied)))
+	}
+	if len(created) > 0 {
+		lines = append(lines, "Created:")
+		lines = append(lines, "- "+strings.Join(created, "\n- "))
+	}
+	if len(updated) > 0 {
+		lines = append(lines, "Updated:")
+		lines = append(lines, "- "+strings.Join(updated, "\n- "))
+	}
+	if len(unchanged) > 0 {
+		lines = append(lines, "Unchanged:")
+		lines = append(lines, "- "+strings.Join(unchanged, "\n- "))
+	}
+
+	m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: strings.Join(lines, "\n")})
+	m.saveSession()
 	return nil
 }
 
@@ -613,32 +751,66 @@ func (m *model) handleSlashCommand(input string) tea.Cmd {
 			return nil
 		}
 
-		written, err := applyProposedFileEdits(m.workspaceRoot, last)
-		if err != nil {
+		if err := m.applyEditsFromText(last, false); err != nil {
+			if errors.Is(err, errNoProposedFileEdits) {
+				m.messages = append(m.messages, chat.Message{
+					From: "GoPilot",
+					Content: "Nothing to apply from the last response. `/apply` only works when the assistant returned `gopilot-file` edit blocks.",
+				})
+				return nil
+			}
 			m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Apply failed: %v", err)})
 			return nil
 		}
-
-		for i, file := range m.contextFiles {
-			for _, path := range written {
-				if file.Path != path {
-					continue
-				}
-				updated, loadErr := loadContextFile(m.workspaceRoot, path)
-				if loadErr == nil {
-					m.contextFiles[i] = updated
-				}
-				break
-			}
+		return nil
+	case "/undo":
+		scope := ""
+		if len(fields) > 1 {
+			scope = strings.TrimSpace(fields[1])
 		}
-
-		m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Applied %d file(s):\n- %s", len(written), strings.Join(written, "\n- "))})
+		if scope == "session" {
+			if len(m.undoHistory) == 0 {
+				m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: "Nothing to undo for this session."})
+				return nil
+			}
+			var revertedAll []string
+			for i := len(m.undoHistory) - 1; i >= 0; i-- {
+				reverted, err := revertUndoBatch(m.workspaceRoot, m.undoHistory[i])
+				if err != nil {
+					m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Undo failed: %v", err)})
+					return nil
+				}
+				revertedAll = append(revertedAll, reverted...)
+			}
+			m.undoHistory = nil
+			m.refreshAttachedContext(revertedAll)
+			m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Reverted all session changes across %d file operation(s).", len(revertedAll))})
+			m.saveSession()
+			return nil
+		}
+		if len(m.undoHistory) == 0 {
+			m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: "Nothing to undo."})
+			return nil
+		}
+		lastBatch := m.undoHistory[len(m.undoHistory)-1]
+		reverted, err := revertUndoBatch(m.workspaceRoot, lastBatch)
+		if err != nil {
+			m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Undo failed: %v", err)})
+			return nil
+		}
+		m.undoHistory = m.undoHistory[:len(m.undoHistory)-1]
+		m.refreshAttachedContext(reverted)
+		m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Reverted last apply across %d file(s):\n- %s", len(reverted), strings.Join(reverted, "\n- "))})
 		m.saveSession()
 		return nil
 	case "/load":
 		target := ""
 		if len(fields) > 1 {
 			target = fields[1]
+		}
+		if strings.TrimSpace(target) == "" {
+			m.openSessionMenu()
+			return nil
 		}
 		if err := m.loadSessionCommand(target); err != nil {
 			m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Load failed: %v", err)})

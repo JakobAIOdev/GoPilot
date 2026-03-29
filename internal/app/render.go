@@ -6,6 +6,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+
+	"github.com/JakobAIOdev/GoPilot/internal/chat"
 )
 
 const appVerticalPadding = 2
@@ -15,6 +17,12 @@ type markdownBlock struct {
 	kind string
 	lang string
 	text string
+}
+
+type editProposalSummary struct {
+	path      string
+	lineCount int
+	charCount int
 }
 
 func renderMessage(msg string, from string, width int) string {
@@ -52,14 +60,23 @@ func renderMessage(msg string, from string, width int) string {
 func renderAssistantMarkdown(msg string, width int) string {
 	blocks := parseMarkdownBlocks(msg)
 	rendered := make([]string, 0, len(blocks))
+	editProposals := make([]editProposalSummary, 0, 4)
 
 	for _, block := range blocks {
 		switch block.kind {
 		case "code":
+			if proposal, ok := summarizeEditProposal(block); ok {
+				editProposals = append(editProposals, proposal)
+				continue
+			}
 			rendered = append(rendered, renderCodeBlock(block, width))
 		default:
 			rendered = append(rendered, renderMarkdownText(block.text, width))
 		}
+	}
+
+	if len(editProposals) > 0 {
+		rendered = append(rendered, renderEditProposalSummary(editProposals, width))
 	}
 
 	return strings.Join(rendered, "\n\n")
@@ -166,6 +183,65 @@ func renderCodeBlock(block markdownBlock, width int) string {
 	)
 }
 
+func summarizeEditProposal(block markdownBlock) (editProposalSummary, bool) {
+	if !strings.HasPrefix(strings.TrimSpace(block.lang), "gopilot-file path=") {
+		return editProposalSummary{}, false
+	}
+	path := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(block.lang), "gopilot-file path="))
+	content := strings.TrimRight(block.text, "\n")
+	lineCount := 0
+	if content != "" {
+		lineCount = len(strings.Split(content, "\n"))
+	}
+	charCount := len(content)
+	return editProposalSummary{
+		path:      path,
+		lineCount: lineCount,
+		charCount: charCount,
+	}, true
+}
+
+func renderEditProposalSummary(proposals []editProposalSummary, width int) string {
+	body := []string{
+		editProposalTitleStyle.Render(fmt.Sprintf("Pending Changes  •  %d file(s)", len(proposals))),
+		editProposalHintStyle.Render("/apply to accept  •  /undo to revert"),
+		"",
+	}
+	for _, proposal := range proposals {
+		body = append(body, editProposalPathStyle.Render(proposal.path))
+		body = append(body, editProposalPreviewStyle.Render(fmt.Sprintf("%d lines  •  %d chars", proposal.lineCount, proposal.charCount)))
+	}
+	return editProposalBoxStyle.MaxWidth(width).Render(strings.Join(body, "\n"))
+}
+
+func pendingApplyHint(messages []chat.Message) string {
+	last := lastAssistantMessage(messages)
+	if last == "" {
+		return ""
+	}
+	edits, err := parseProposedFileEdits(last)
+	if err != nil || len(edits) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("pending edits: %d file(s)  •  /apply accept  •  /undo revert", len(edits))
+}
+
+func (m model) renderInputPreview(width int) string {
+	value := strings.TrimRight(m.input.Value(), "\n")
+	if value == "" {
+		return ""
+	}
+	if len([]rune(value)) <= max(width-12, 24) && !strings.Contains(value, "\n") {
+		return ""
+	}
+
+	body := []string{
+		editProposalTitleStyle.Render("Prompt Preview"),
+		editProposalPreviewStyle.Width(max(width-4, 20)).Render(value),
+	}
+	return editProposalBoxStyle.Width(width).Render(strings.Join(body, "\n\n"))
+}
+
 func cleanInlineMarkdown(text string) string {
 	replacer := strings.NewReplacer(
 		"**", "",
@@ -192,10 +268,9 @@ func (m *model) refreshLayout() {
 	}
 
 	contentWidth := min(max(m.panelW, 36), classicLayoutWidth)
-	viewportWidth := max(contentWidth-4, 28)
 	inputWidth := max(contentWidth-4, 20)
 
-	m.viewport.SetWidth(viewportWidth)
+	m.viewport.SetWidth(max(contentWidth-4, 28))
 	m.input.SetWidth(inputWidth)
 
 	statusText := fmt.Sprintf("%d msgs  •  Enter send  •  /model  •  /add  •  /files  •  /apply  •  /copy  •  /plain  •  Esc quit", len(m.messages))
@@ -208,12 +283,13 @@ func (m *model) refreshLayout() {
 	if strings.TrimSpace(m.sessionSaveErr) != "" {
 		statusText = fmt.Sprintf("%s  •  session save failed", statusText)
 	}
+	if hint := pendingApplyHint(m.messages); hint != "" {
+		statusText = fmt.Sprintf("%s  •  %s", statusText, hint)
+	}
 
 	statusHeight := lipgloss.Height(statusStyle.Width(contentWidth).Render(statusText))
 	inputHeight := lipgloss.Height(inputFrameStyle.Width(contentWidth).Render(m.input.View()))
 	metaHeight := lipgloss.Height(inputMetaStyle.Width(contentWidth).Render(fmt.Sprintf("Current model: %s", m.currentModel())))
-
-	panelChromeHeight := lipgloss.Height(panelStyle.Width(contentWidth).Render("")) - 1
 
 	menuHeight := 0
 	if m.choosingModel {
@@ -226,14 +302,43 @@ func (m *model) refreshLayout() {
 			m.modelMenuIndex,
 		))
 	}
+	if m.choosingSession {
+		menuHeight = lipgloss.Height(m.renderSessionMenu(contentWidth))
+	}
 	completionHeight := 0
 	if m.hasCompletions() {
 		completionHeight = lipgloss.Height(m.renderCompletions(contentWidth))
 	}
+	previewHeight := 0
+	if preview := m.renderInputPreview(contentWidth); preview != "" {
+		previewHeight = lipgloss.Height(preview)
+	}
 
-	occupiedHeight := appVerticalPadding + statusHeight + menuHeight + inputHeight + completionHeight + metaHeight + panelChromeHeight
+	occupiedHeight := appVerticalPadding + statusHeight + menuHeight + previewHeight + inputHeight + completionHeight + metaHeight
 	viewportHeight := max(m.height-occupiedHeight, 4)
 	m.viewport.SetHeight(viewportHeight)
+}
+
+func (m model) renderConversation(width int) string {
+	var b strings.Builder
+	for i, msg := range m.messages {
+		b.WriteString(renderMessage(msg.Content, msg.From, width))
+		if i < len(m.messages)-1 {
+			b.WriteString("\n\n")
+		}
+	}
+	return b.String()
+}
+
+func joinSections(parts ...string) string {
+	nonEmpty := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if strings.TrimSpace(part) == "" {
+			continue
+		}
+		nonEmpty = append(nonEmpty, part)
+	}
+	return strings.Join(nonEmpty, "\n")
 }
 
 func (m model) renderMenu(width int, title string, hint string, items []string, activeIndex int, menuIndex int) string {
@@ -308,10 +413,59 @@ func (m model) renderCompletions(width int) string {
 	return completionBoxStyle.Width(width).Render(strings.Join(lines, "\n"))
 }
 
+func (m model) renderSessionMenu(width int) string {
+	items := m.filteredSessionSummaries()
+	var lines []string
+	lines = append(lines, menuTitleStyle.Render("Load Session"))
+	lines = append(lines, menuHintStyle.Render("Type to filter  •  Up/Down choose  •  Enter load  •  Esc cancel"))
+	filter := strings.TrimSpace(m.sessionFilter)
+	if filter == "" {
+		filter = "all"
+	}
+	lines = append(lines, menuHintStyle.Render(fmt.Sprintf("Filter: %s  •  %d result(s)", filter, len(items))))
+	lines = append(lines, "")
+
+	if len(items) == 0 {
+		lines = append(lines, menuItemStyle.Render("  No sessions match the current filter"))
+		return menuStyle.Width(width).Render(strings.Join(lines, "\n"))
+	}
+
+	limit := min(len(items), 10)
+	start := 0
+	if len(items) > limit {
+		start = m.sessionMenuIndex - limit/2
+		if start < 0 {
+			start = 0
+		}
+		maxStart := len(items) - limit
+		if start > maxStart {
+			start = maxStart
+		}
+	}
+	end := min(start+limit, len(items))
+
+	for i := start; i < end; i++ {
+		prefix := "  "
+		style := menuItemStyle
+		if i == m.sessionMenuIndex {
+			prefix = "> "
+			style = menuSelectedStyle
+		}
+		label := fmt.Sprintf("%s%s  •  %s  •  %s", prefix, items[i].ID, items[i].UpdatedAt.Format("2006-01-02 15:04"), items[i].Title)
+		lines = append(lines, style.Render(label))
+	}
+
+	if len(items) > limit {
+		lines = append(lines, "")
+		lines = append(lines, menuHintStyle.Render(fmt.Sprintf("%d-%d of %d", start+1, end, len(items))))
+	}
+
+	return menuStyle.Width(width).Render(strings.Join(lines, "\n"))
+}
+
 func (m model) View() tea.View {
 	if !m.ready {
 		v := tea.NewView(loadingStyle.Render("Loading GoPilot..."))
-		v.AltScreen = true
 		v.WindowTitle = windowTitle
 		return v
 	}
@@ -326,10 +480,9 @@ func (m model) View() tea.View {
 
 		content := plainTextStyle.Render(plain)
 		hint := plainHintStyle.Render("Esc back")
-		layout := lipgloss.JoinVertical(lipgloss.Left, content, "", hint)
+		layout := joinSections(content, "", hint)
 
 		v := tea.NewView(layout)
-		v.AltScreen = true
 		v.WindowTitle = windowTitle
 		return v
 	}
@@ -344,15 +497,22 @@ func (m model) View() tea.View {
 	if strings.TrimSpace(m.sessionSaveErr) != "" {
 		statusText = fmt.Sprintf("%s  •  session save failed", statusText)
 	}
+	if hint := pendingApplyHint(m.messages); hint != "" {
+		statusText = fmt.Sprintf("%s  •  %s", statusText, hint)
+	}
 
 	contentWidth := max(m.panelW, 36)
 	status := statusStyle.Width(contentWidth).Render(statusText)
-	conversation := panelStyle.Width(contentWidth).Render(m.viewport.View())
+	conversation := m.renderConversation(max(contentWidth-2, 28))
+	inputPreview := m.renderInputPreview(contentWidth)
 	inputCard := inputFrameStyle.Width(contentWidth).Render(m.input.View())
 	completionBox := m.renderCompletions(contentWidth)
 	metaText := fmt.Sprintf("%s  •  %s  •  %s  •  %d attached  •  %s", assistantLabelStyle.Render("model"), m.currentModel(), assistantLabelStyle.Render("workspace"), m.contextFilesLen(), m.completionStatus())
 	if strings.TrimSpace(m.sessionSaveErr) != "" {
 		metaText = fmt.Sprintf("%s  •  %s", metaText, assistantLabelStyle.Render("session save failed"))
+	}
+	if hint := pendingApplyHint(m.messages); hint != "" {
+		metaText = fmt.Sprintf("%s  •  %s", metaText, assistantLabelStyle.Render(hint))
 	}
 	inputMeta := inputMetaStyle.Width(contentWidth).Render(metaText)
 
@@ -367,20 +527,20 @@ func (m model) View() tea.View {
 			m.modelMenuIndex,
 		)
 	}
+	if m.choosingSession {
+		menu = m.renderSessionMenu(contentWidth)
+	}
 
-	content := lipgloss.JoinVertical(
-		lipgloss.Left,
+	layout := joinSections(
 		status,
 		conversation,
 		menu,
+		inputPreview,
 		inputCard,
 		completionBox,
 		inputMeta,
 	)
-
-	layout := appStyle.Render(content)
 	v := tea.NewView(layout)
-	v.AltScreen = true
 	v.WindowTitle = windowTitle
 	return v
 }

@@ -307,6 +307,8 @@ func contextPrompt(req chat.Request) string {
 		b.WriteString("full file contents here\n")
 		b.WriteString("```\n")
 		b.WriteString("Only include blocks for files that should be written. Keep explanations outside the fenced blocks.\n")
+		b.WriteString("When the user is asking for changes to an existing project file such as README.md, package metadata, config files, or source files, prefer returning `gopilot-file` blocks instead of prose-only output.\n")
+		b.WriteString("If the user is only asking a question or requesting analysis, answer normally without file blocks.\n")
 	}
 
 	return strings.TrimSpace(b.String())

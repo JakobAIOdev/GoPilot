@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -222,6 +223,59 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		if m.choosingSession {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc":
+				m.closeSessionMenu()
+				m.refreshLayout()
+				m.syncViewport()
+				return m, nil
+			case "up", "ctrl+p":
+				m.cycleSessionMenu(-1)
+				m.refreshLayout()
+				return m, nil
+			case "down", "ctrl+n":
+				m.cycleSessionMenu(1)
+				m.refreshLayout()
+				return m, nil
+			case "backspace", "ctrl+h":
+				filter := []rune(m.sessionFilter)
+				if len(filter) > 0 {
+					m.updateSessionFilter(string(filter[:len(filter)-1]))
+					m.refreshLayout()
+				}
+				return m, nil
+			case "enter":
+				items := m.filteredSessionSummaries()
+				if len(items) == 0 {
+					return m, nil
+				}
+				if err := m.loadSessionCommand(items[m.sessionMenuIndex].ID); err != nil {
+					m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Load failed: %v", err)})
+					m.saveSession()
+				} else {
+					m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Loaded session `%s`.", m.sessionID)})
+					m.saveSession()
+				}
+				m.closeSessionMenu()
+				m.refreshLayout()
+				m.syncViewport()
+				m.viewport.GotoBottom()
+				return m, nil
+			default:
+				key := msg.String()
+				if len([]rune(key)) == 1 {
+					m.updateSessionFilter(m.sessionFilter + key)
+					m.refreshLayout()
+					return m, nil
+				}
+			}
+
+			return m, nil
+		}
+
 		switch msg.String() {
 		case "ctrl+c", "esc":
 			if m.cancelStream != nil {
@@ -282,28 +336,50 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.waiting {
 				return m, nil
 			}
-			m.refreshCompletions()
-			if m.shouldApplyCompletionOnEnter() {
-				m.applySelectedCompletion()
-				m.refreshLayout()
-				return m, nil
-			}
-
 			userText := strings.TrimSpace(m.input.Value())
 			if userText == "" {
 				return m, nil
 			}
 
-			if strings.HasPrefix(userText, "/") {
-				cmd := m.handleSlashCommand(userText)
-				if !m.waiting {
+			processedInlineCommands := false
+			if strings.Contains(userText, "/") {
+				commands, promptText := splitInlineSlashCommands(userText)
+				if len(commands) > 0 {
+					processedInlineCommands = true
 					m.resetCompletions()
-					m.input.SetValue("")
+					for _, command := range commands {
+						if m.waiting {
+							break
+						}
+						cmd := m.handleSlashCommand(command)
+						if cmd != nil {
+							m.refreshLayout()
+							m.syncViewport()
+							m.viewport.GotoBottom()
+							return m, cmd
+						}
+					}
+					if !m.waiting && strings.TrimSpace(promptText) == "" {
+						m.resetCompletions()
+						m.input.SetValue("")
+						m.refreshLayout()
+						m.syncViewport()
+						m.viewport.GotoBottom()
+						return m, nil
+					}
+					userText = strings.TrimSpace(promptText)
 				}
-				m.refreshLayout()
-				m.syncViewport()
-				m.viewport.GotoBottom()
-				return m, cmd
+			}
+			if userText == "" {
+				return m, nil
+			}
+			if !processedInlineCommands {
+				m.refreshCompletions()
+				if m.shouldApplyCompletionOnEnter() {
+					m.applySelectedCompletion()
+					m.refreshLayout()
+					return m, nil
+				}
 			}
 
 			m.submitPrompt(userText)

@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
+
 	"github.com/JakobAIOdev/GoPilot/internal/chat"
 )
 
@@ -52,7 +54,7 @@ func TestStoredSessionOmitsPendingAssistantPlaceholder(t *testing.T) {
 
 func TestLoadSessionCommandKeepsCurrentWorkspaceAndClearsForeignAttachments(t *testing.T) {
 	configDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", configDir)
+	t.Setenv("HOME", configDir)
 
 	currentRoot := filepath.Join(t.TempDir(), "current")
 	otherRoot := filepath.Join(t.TempDir(), "other")
@@ -148,5 +150,151 @@ func TestSaveSessionStoresErrorState(t *testing.T) {
 
 	if strings.TrimSpace(m.sessionSaveErr) == "" {
 		t.Fatal("expected session save error to be captured")
+	}
+}
+
+func TestStoredSessionIncludesUndoHistory(t *testing.T) {
+	t.Parallel()
+
+	m := model{
+		sessionID:      "session-undo",
+		sessionCreated: time.Now(),
+		models:         []string{"gemini-3-flash-preview"},
+		undoHistory: []undoBatch{
+			{
+				AppliedAt: time.Now(),
+				Entries: []undoEntry{
+					{Path: "a.txt", ExistedBefore: true, PreviousContent: "old"},
+				},
+			},
+		},
+		messages: []chat.Message{{From: "GoPilot", Content: initialSplash}},
+	}
+
+	session := m.storedSession()
+	if len(session.UndoHistory) != 1 {
+		t.Fatalf("expected undo history to be persisted, got %d entries", len(session.UndoHistory))
+	}
+}
+
+func TestApplyEditsFromTextCreatesFilesAndUndoHistory(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	m := model{
+		workspaceRoot: root,
+		sessionID:     "session-apply",
+		sessionCreated: time.Now(),
+		models:        []string{"gemini-3-flash-preview"},
+		messages:      []chat.Message{{From: "GoPilot", Content: initialSplash}},
+	}
+
+	text := "```gopilot-file path=1/info.txt\nhello\n```"
+	if err := m.applyEditsFromText(text, true); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(root, "1", "info.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "hello\n" {
+		t.Fatalf("unexpected file content: %q", string(data))
+	}
+	if len(m.undoHistory) != 1 {
+		t.Fatalf("expected undo history entry, got %d", len(m.undoHistory))
+	}
+	last := m.messages[len(m.messages)-1].Content
+	if !strings.Contains(last, "Applied generated changes") {
+		t.Fatalf("unexpected apply message: %q", last)
+	}
+}
+
+func TestFilteredSessionSummariesUsesIDAndTitle(t *testing.T) {
+	t.Parallel()
+
+	m := model{
+		sessionSummaries: []sessionSummary{
+			{ID: "20260101-aaaa", Title: "alpha task"},
+			{ID: "20260102-bbbb", Title: "beta task"},
+		},
+	}
+
+	m.sessionFilter = "beta"
+	items := m.filteredSessionSummaries()
+	if len(items) != 1 || items[0].ID != "20260102-bbbb" {
+		t.Fatalf("unexpected filtered sessions by title: %#v", items)
+	}
+
+	m.sessionFilter = "aaaa"
+	items = m.filteredSessionSummaries()
+	if len(items) != 1 || items[0].ID != "20260101-aaaa" {
+		t.Fatalf("unexpected filtered sessions by id: %#v", items)
+	}
+}
+
+func TestEnterSubmitsPromptWithInlineCodebaseCommand(t *testing.T) {
+	t.Parallel()
+
+	m := newModel()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m.workspaceRoot = root
+	m.ready = true
+	m.width = 120
+	m.height = 40
+	m.panelW = classicLayoutWidth
+	m.input.SetValue("please review this repo /codebase")
+	m.input.SetCursor(len(m.input.Value()))
+
+	updatedModel, cmd := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	updated := updatedModel.(model)
+
+	if cmd == nil {
+		t.Fatal("expected stream command to be returned")
+	}
+	if !updated.waiting {
+		t.Fatal("expected model to enter waiting state")
+	}
+	if len(updated.contextFiles) == 0 {
+		t.Fatal("expected /codebase to attach workspace files before sending")
+	}
+	if got := updated.messages[len(updated.messages)-2].Content; got != "please review this repo" {
+		t.Fatalf("expected cleaned user prompt, got %q", got)
+	}
+}
+
+func TestRenderInputPreviewShowsLongPrompt(t *testing.T) {
+	t.Parallel()
+
+	m := newModel()
+	m.input.SetValue(strings.Repeat("a", 120))
+
+	rendered := m.renderInputPreview(80)
+	if !strings.Contains(rendered, "Prompt Preview") {
+		t.Fatalf("expected prompt preview to render, got %q", rendered)
+	}
+	if !strings.Contains(rendered, strings.Repeat("a", 40)) {
+		t.Fatalf("expected preview to include prompt content, got %q", rendered)
+	}
+}
+
+func TestApplyCommandShowsHelpfulMessageWithoutFileBlocks(t *testing.T) {
+	t.Parallel()
+
+	m := model{
+		messages: []chat.Message{
+			{From: "GoPilot", Content: initialSplash},
+			{From: "GoPilot", Content: "Regular markdown answer without editable file blocks."},
+		},
+	}
+
+	m.handleSlashCommand("/apply")
+
+	last := m.messages[len(m.messages)-1].Content
+	if !strings.Contains(last, "Nothing to apply from the last response") {
+		t.Fatalf("unexpected apply guidance: %q", last)
 	}
 }

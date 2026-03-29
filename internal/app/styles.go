@@ -116,4 +116,24 @@ var (
 	codeLangStyle = lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#8A8A8A")).
 		Bold(true)
+
+	editProposalBoxStyle = lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#5B6B4A")).
+		Padding(0, 1)
+
+	editProposalTitleStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#EEF5DE")).
+		Bold(true)
+
+	editProposalPathStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#DCE8C2")).
+		Bold(true)
+
+	editProposalPreviewStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#A4AF97")).
+		Padding(0, 0, 0, 2)
+
+	editProposalHintStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#8E9785"))
 )

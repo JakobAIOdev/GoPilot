@@ -25,6 +25,7 @@ type storedSession struct {
 	Messages      []chat.Message     `json:"messages"`
 	SharedHistory []chat.Message     `json:"shared_history"`
 	ContextFiles  []chat.ContextFile `json:"context_files"`
+	UndoHistory   []undoBatch        `json:"undo_history,omitempty"`
 }
 
 type sessionSummary struct {
@@ -150,14 +151,18 @@ func listStoredSessions() ([]sessionSummary, error) {
 		if err != nil {
 			continue
 		}
-		var session storedSession
-		if err := json.Unmarshal(data, &session); err != nil {
+		var summary struct {
+			ID        string    `json:"id"`
+			Title     string    `json:"title"`
+			UpdatedAt time.Time `json:"updated_at"`
+		}
+		if err := json.Unmarshal(data, &summary); err != nil {
 			continue
 		}
 		summaries = append(summaries, sessionSummary{
-			ID:        session.ID,
-			Title:     session.Title,
-			UpdatedAt: session.UpdatedAt,
+			ID:        summary.ID,
+			Title:     summary.Title,
+			UpdatedAt: summary.UpdatedAt,
 		})
 	}
 
@@ -183,16 +188,16 @@ func formatSessionList(summaries []sessionSummary) string {
 		return "No saved sessions."
 	}
 
-	lines := []string{"Saved sessions:"}
+	lines := []string{fmt.Sprintf("Saved sessions (%d total):", len(summaries))}
 	limit := len(summaries)
-	if limit > 10 {
-		limit = 10
+	if limit > 20 {
+		limit = 20
 	}
 	for i := 0; i < limit; i++ {
 		lines = append(lines, fmt.Sprintf("- %s  •  %s  •  %s", summaries[i].ID, summaries[i].UpdatedAt.Format("2006-01-02 15:04"), summaries[i].Title))
 	}
 	if len(summaries) > limit {
-		lines = append(lines, fmt.Sprintf("- ... and %d more", len(summaries)-limit))
+		lines = append(lines, fmt.Sprintf("- ... and %d more  •  use /load to search and pick", len(summaries)-limit))
 	}
 	return strings.Join(lines, "\n")
 }
