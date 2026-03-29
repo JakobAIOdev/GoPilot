@@ -73,31 +73,6 @@ If your Go bin directory is not on your `PATH` yet:
 export PATH="$(go env GOPATH)/bin:$PATH"
 ```
 
-## Publishing Releases
-
-Homebrew users can only install `gopilot` directly once you publish tagged GitHub releases and provide a tap formula.
-
-1. Create a public repository named `homebrew-tap` under `JakobAIOdev`
-2. Add a GitHub token as the Actions secret `HOMEBREW_TAP_GITHUB_TOKEN`
-3. Tag a release and push it:
-
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-The workflow in `.github/workflows/release.yml` will then:
-
-- build release binaries for macOS, Linux, and Windows
-- publish a GitHub Release
-- update the Homebrew formula in `JakobAIOdev/homebrew-tap`
-
-After that, users can install via:
-
-```bash
-brew install JakobAIOdev/tap/gopilot
-```
-
 ## Usage
 
 Run from your project directory:
