@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -120,7 +121,7 @@ func newModel() model {
 	ti.Prompt = "ask > "
 	ti.Placeholder = "Type a prompt and press Enter"
 	ti.Focus()
-	ti.CharLimit = 400
+	ti.CharLimit = 0
 	tiStyles := ti.Styles()
 	tiStyles.Focused.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("#DADADA")).Bold(true)
 	tiStyles.Focused.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("#F5F5F5"))
@@ -857,13 +858,28 @@ func (m *model) handleSlashCommand(input string) tea.Cmd {
 		copyText := last
 		label := "last response"
 		if len(fields) > 1 && strings.TrimSpace(fields[1]) == "code" {
-			code := extractFirstFencedCodeBlock(last)
-			if code == "" {
-				m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: "No fenced code block found in the last response."})
+			allBlocks := extractAllFencedCodeBlocks(last)
+			if len(allBlocks) == 0 {
+				m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: "No fenced code blocks found in the last response."})
 				return nil
 			}
-			copyText = code
-			label = "first code block"
+			// /copy code N → copy Nth block
+			if len(fields) > 2 {
+				idx, err := strconv.Atoi(strings.TrimSpace(fields[2]))
+				if err != nil || idx < 1 || idx > len(allBlocks) {
+					m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Invalid block number. Found %d code block(s).", len(allBlocks))})
+					return nil
+				}
+				copyText = allBlocks[idx-1]
+				label = fmt.Sprintf("code block #%d", idx)
+			} else {
+				copyText = strings.Join(allBlocks, "\n\n")
+				if len(allBlocks) == 1 {
+					label = "1 code block"
+				} else {
+					label = fmt.Sprintf("%d code blocks", len(allBlocks))
+				}
+			}
 		}
 
 		if err := clipboard.WriteAll(copyText); err != nil {
@@ -892,8 +908,42 @@ func (m *model) handleSlashCommand(input string) tea.Cmd {
 		m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: formatSessionList(summaries)})
 		m.saveSession()
 		return nil
+	case "/help":
+		m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: formatHelpText()})
+		m.saveSession()
+		return nil
+	case "/delete":
+		target := ""
+		if len(fields) > 1 {
+			target = strings.TrimSpace(fields[1])
+		}
+		if target == "" {
+			m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: "Usage: /delete <session-id> or /delete all"})
+			return nil
+		}
+		if strings.EqualFold(target, "all") {
+			count, err := deleteAllStoredSessions()
+			if err != nil {
+				m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Delete failed: %v", err)})
+				return nil
+			}
+			m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Deleted %d session(s).", count)})
+			m.saveSession()
+			return nil
+		}
+		if target == m.sessionID {
+			m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: "Cannot delete the current active session."})
+			return nil
+		}
+		if err := deleteStoredSession(target); err != nil {
+			m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Delete failed: %v", err)})
+			return nil
+		}
+		m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Deleted session `%s`.", target)})
+		m.saveSession()
+		return nil
 	default:
-		m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Unknown command %q.", fields[0])})
+		m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Unknown command %q. Type /help for a list of commands.", fields[0])})
 		m.saveSession()
 		return nil
 	}
