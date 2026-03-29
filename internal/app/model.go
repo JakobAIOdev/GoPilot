@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/atotto/clipboard"
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
@@ -38,6 +39,8 @@ type streamStartedMsg struct {
 
 type streamFlushMsg struct{}
 
+type retryStreamMsg struct{}
+
 type model struct {
 	input          textinput.Model
 	viewport       viewport.Model
@@ -49,6 +52,7 @@ type model struct {
 	ready          bool
 	waiting        bool
 	choosingModel  bool
+	plainView      bool
 	modelMenuIndex int
 	width          int
 	height         int
@@ -57,6 +61,9 @@ type model struct {
 	cancelStream   context.CancelFunc
 	streamBuffer   strings.Builder
 	flushScheduled bool
+	pendingModel   string
+	pendingHistory []chat.Message
+	retryCount     int
 }
 
 func newModel() model {
@@ -123,6 +130,10 @@ func (m *model) closeModelMenu() {
 	m.input.SetValue("")
 }
 
+func (m *model) togglePlainView() {
+	m.plainView = !m.plainView
+}
+
 func (m *model) cycleModelMenu(step int) {
 	if len(m.models) == 0 {
 		return
@@ -138,6 +149,9 @@ func (m *model) resetConversation() {
 	m.stream = nil
 	m.waiting = false
 	m.sharedHistory = nil
+	m.pendingModel = ""
+	m.pendingHistory = nil
+	m.retryCount = 0
 	m.messages = []chat.Message{
 		{From: "GoPilot", Content: "Conversation cleared. Shared context is empty now."},
 	}
@@ -206,6 +220,39 @@ func (m *model) handleSlashCommand(input string) bool {
 		return true
 	case "/clear":
 		m.resetConversation()
+		return true
+	case "/copy":
+		last := lastAssistantMessage(m.messages)
+		if last == "" {
+			m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: "Nothing to copy yet."})
+			return true
+		}
+
+		copyText := last
+		label := "last response"
+		if len(fields) > 1 && strings.TrimSpace(fields[1]) == "code" {
+			code := extractFirstFencedCodeBlock(last)
+			if code == "" {
+				m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: "No fenced code block found in the last response."})
+				return true
+			}
+			copyText = code
+			label = "first code block"
+		}
+
+		if err := clipboard.WriteAll(copyText); err != nil {
+			m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Copy failed: %v", err)})
+			return true
+		}
+
+		m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Copied %s to clipboard.", label)})
+		return true
+	case "/plain":
+		if lastAssistantMessage(m.messages) == "" {
+			m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: "Nothing to show in plain view yet."})
+			return true
+		}
+		m.togglePlainView()
 		return true
 	default:
 		m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Unknown command %q.", fields[0])})

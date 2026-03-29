@@ -11,6 +11,7 @@ import (
 )
 
 const streamFlushInterval = 40 * time.Millisecond
+const maxAutoRetries = 1
 
 func waitForStreamEvent(stream <-chan chat.StreamEvent) tea.Cmd {
 	return func() tea.Msg {
@@ -49,6 +50,12 @@ func scheduleStreamFlush() tea.Cmd {
 	})
 }
 
+func scheduleRetry(delay time.Duration) tea.Cmd {
+	return tea.Tick(delay, func(time.Time) tea.Msg {
+		return retryStreamMsg{}
+	})
+}
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -70,6 +77,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cancelStream()
 				m.cancelStream = nil
 			}
+
+			if delay, ok := quotaRetryDelay(msg.event.Err); ok && m.retryCount < maxAutoRetries && m.pendingModel != "" && len(m.pendingHistory) > 0 {
+				m.retryCount++
+				m.replaceLastAssistantMessage(formatRetryNotice(msg.event.Err, delay))
+				m.refreshLayout()
+				m.syncViewport()
+				m.viewport.GotoBottom()
+				return m, scheduleRetry(delay)
+			}
+
 			m.replaceLastAssistantMessage(formatBackendError(msg.event.Err))
 			m.refreshLayout()
 			m.syncViewport()
@@ -94,6 +111,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cancelStream = nil
 			}
 			m.sharedHistory = append(m.sharedHistory, chat.Message{From: "GoPilot", Content: m.messages[len(m.messages)-1].Content})
+			m.pendingModel = ""
+			m.pendingHistory = nil
+			m.retryCount = 0
 			m.refreshLayout()
 			m.syncViewport()
 			m.viewport.GotoBottom()
@@ -111,10 +131,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case retryStreamMsg:
+		if m.waiting || m.pendingModel == "" || len(m.pendingHistory) == 0 {
+			return m, nil
+		}
+
+		m.waiting = true
+		m.streamBuffer.Reset()
+		m.flushScheduled = false
+		m.replaceLastAssistantMessage("")
+		m.refreshLayout()
+		m.syncViewport()
+		m.viewport.GotoBottom()
+		return m, startStreamCmd(m.backend, m.pendingModel, cloneMessages(m.pendingHistory))
+
 	case streamStartedMsg:
 		if msg.err != nil {
 			m.waiting = false
 			m.flushPendingStreamText()
+
+			if delay, ok := quotaRetryDelay(msg.err); ok && m.retryCount < maxAutoRetries && m.pendingModel != "" && len(m.pendingHistory) > 0 {
+				m.retryCount++
+				m.replaceLastAssistantMessage(formatRetryNotice(msg.err, delay))
+				m.refreshLayout()
+				m.syncViewport()
+				m.viewport.GotoBottom()
+				return m, scheduleRetry(delay)
+			}
+
 			m.replaceLastAssistantMessage(formatBackendError(msg.err))
 			m.refreshLayout()
 			m.syncViewport()
@@ -127,6 +171,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitForStreamEvent(msg.stream)
 
 	case tea.KeyMsg:
+		if m.plainView {
+			switch msg.String() {
+			case "ctrl+c":
+				if m.cancelStream != nil {
+					m.cancelStream()
+				}
+				return m, tea.Quit
+			case "esc":
+				m.plainView = false
+				m.refreshLayout()
+				m.syncViewport()
+				return m, nil
+			}
+
+			return m, nil
+		}
+
 		if m.choosingModel {
 			switch msg.String() {
 			case "ctrl+c":
@@ -203,11 +264,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.waiting = true
 			m.streamBuffer.Reset()
 			m.flushScheduled = false
+			m.pendingModel = m.currentModel()
+			m.pendingHistory = cloneMessages(m.sharedHistory)
+			m.retryCount = 0
 			m.input.SetValue("")
 			m.refreshLayout()
 			m.syncViewport()
 			m.viewport.GotoBottom()
-			cmd := startStreamCmd(m.backend, m.currentModel(), cloneMessages(m.sharedHistory))
+			cmd := startStreamCmd(m.backend, m.pendingModel, cloneMessages(m.pendingHistory))
 			return m, cmd
 		}
 	}

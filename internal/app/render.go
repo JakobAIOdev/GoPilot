@@ -11,6 +11,12 @@ import (
 const appVerticalPadding = 2
 const classicLayoutWidth = 84
 
+type markdownBlock struct {
+	kind string
+	lang string
+	text string
+}
+
 func renderMessage(msg string, from string, width int) string {
 	if from == "GoPilot" && msg == initialSplash {
 		return lipgloss.JoinVertical(
@@ -20,14 +26,14 @@ func renderMessage(msg string, from string, width int) string {
 		)
 	}
 
-	bubbleWidth := min(max(width-2, 28), 76)
-	textWidth := max(bubbleWidth-4, 24)
-	textContent := lipgloss.NewStyle().
-		Width(textWidth).
-		MaxWidth(textWidth).
-		Render(msg)
-
 	if from == "User" {
+		bubbleWidth := min(max(width-2, 28), 76)
+		textWidth := max(bubbleWidth-4, 24)
+		textContent := lipgloss.NewStyle().
+			Width(textWidth).
+			MaxWidth(textWidth).
+			Render(msg)
+
 		return lipgloss.JoinVertical(
 			lipgloss.Left,
 			userNameStyle.Render("you"),
@@ -38,8 +44,125 @@ func renderMessage(msg string, from string, width int) string {
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
 		assistantNameStyle.Render("gopilot"),
-		assistantBubbleStyle.Width(bubbleWidth).MaxWidth(bubbleWidth).Render(textContent),
+		renderAssistantMarkdown(msg, min(max(width, 28), 76)),
 	)
+}
+
+func renderAssistantMarkdown(msg string, width int) string {
+	blocks := parseMarkdownBlocks(msg)
+	rendered := make([]string, 0, len(blocks))
+
+	for _, block := range blocks {
+		switch block.kind {
+		case "code":
+			rendered = append(rendered, renderCodeBlock(block, width))
+		default:
+			rendered = append(rendered, renderMarkdownText(block.text, width))
+		}
+	}
+
+	return strings.Join(rendered, "\n\n")
+}
+
+func parseMarkdownBlocks(msg string) []markdownBlock {
+	lines := strings.Split(msg, "\n")
+	blocks := make([]markdownBlock, 0, 4)
+	var textLines []string
+	var codeLines []string
+	var codeLang string
+	inCode := false
+
+	flushText := func() {
+		if len(textLines) == 0 {
+			return
+		}
+		blocks = append(blocks, markdownBlock{
+			kind: "text",
+			text: strings.Join(textLines, "\n"),
+		})
+		textLines = nil
+	}
+
+	flushCode := func() {
+		blocks = append(blocks, markdownBlock{
+			kind: "code",
+			lang: codeLang,
+			text: strings.Join(codeLines, "\n"),
+		})
+		codeLines = nil
+		codeLang = ""
+	}
+
+	for _, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			if inCode {
+				flushCode()
+				inCode = false
+				continue
+			}
+
+			flushText()
+			inCode = true
+			codeLang = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "```"))
+			continue
+		}
+
+		if inCode {
+			codeLines = append(codeLines, line)
+			continue
+		}
+
+		textLines = append(textLines, line)
+	}
+
+	if inCode {
+		flushCode()
+	}
+	flushText()
+
+	return blocks
+}
+
+func renderMarkdownText(text string, width int) string {
+	lines := strings.Split(text, "\n")
+	renderedLines := make([]string, 0, len(lines))
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			renderedLines = append(renderedLines, "")
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, "#") {
+			title := strings.TrimSpace(strings.TrimLeft(trimmed, "#"))
+			renderedLines = append(renderedLines, assistantHeadingStyle.Render(cleanInlineMarkdown(title)))
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, "* ") || strings.HasPrefix(trimmed, "- ") {
+			renderedLines = append(renderedLines, "• "+cleanInlineMarkdown(strings.TrimSpace(trimmed[2:])))
+			continue
+		}
+
+		renderedLines = append(renderedLines, cleanInlineMarkdown(trimmed))
+	}
+
+	return assistantTextStyle.Width(width).Render(strings.Join(renderedLines, "\n"))
+}
+
+func renderCodeBlock(block markdownBlock, width int) string {
+	content := strings.TrimRight(block.text, "\n")
+	return codeBlockStyle.Width(width).Render(content)
+}
+
+func cleanInlineMarkdown(text string) string {
+	replacer := strings.NewReplacer(
+		"**", "",
+		"__", "",
+		"`", "",
+	)
+	return replacer.Replace(text)
 }
 
 func (m *model) syncViewport() {
@@ -65,7 +188,7 @@ func (m *model) refreshLayout() {
 	m.viewport.SetWidth(viewportWidth)
 	m.input.SetWidth(inputWidth)
 
-	statusText := fmt.Sprintf("%d msgs  •  Enter send  •  /model menu  •  Ctrl+N/Ctrl+P model  •  Esc quit", len(m.messages))
+	statusText := fmt.Sprintf("%d msgs  •  Enter send  •  /model  •  /copy  •  /plain  •  Esc quit", len(m.messages))
 	if m.waiting {
 		statusText = fmt.Sprintf("%s  •  streaming from %s", statusText, m.currentModel())
 	}
@@ -132,7 +255,23 @@ func (m model) View() tea.View {
 		return v
 	}
 
-	statusText := fmt.Sprintf("%d msgs  •  Enter send  •  /model menu  •  Ctrl+N/Ctrl+P model  •  Esc quit", len(m.messages))
+	if m.plainView {
+		plain := lastAssistantMessage(m.messages)
+		if plain == "" {
+			plain = "Nothing to show."
+		}
+
+		hint := plainHintStyle.Render("Plain view  •  Esc back")
+		content := plainTextStyle.Render(plain)
+		layout := lipgloss.JoinVertical(lipgloss.Left, hint, "", content)
+
+		v := tea.NewView(layout)
+		v.AltScreen = true
+		v.WindowTitle = windowTitle
+		return v
+	}
+
+	statusText := fmt.Sprintf("%d msgs  •  Enter send  •  /model  •  /copy  •  /plain  •  Esc quit", len(m.messages))
 	if m.waiting {
 		statusText = fmt.Sprintf("%s  •  streaming from %s", statusText, m.currentModel())
 	}
