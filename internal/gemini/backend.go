@@ -182,7 +182,7 @@ func (b *Backend) Stream(ctx context.Context, req chat.Request) (<-chan chat.Str
 		Project:      projectID,
 		UserPromptID: newPromptID(),
 		Request: vertexGenerateContentRequest{
-			Contents: toContents(req.Messages),
+			Contents: toContents(req),
 		},
 	}
 
@@ -196,9 +196,9 @@ func (b *Backend) Stream(ctx context.Context, req chat.Request) (<-chan chat.Str
 	return events, nil
 }
 
-func toContents(messages []chat.Message) []content {
-	contents := make([]content, 0, len(messages))
-	for _, msg := range messages {
+func toContents(req chat.Request) []content {
+	contents := make([]content, 0, len(req.Messages)+1)
+	for _, msg := range req.Messages {
 		text := strings.TrimSpace(msg.Content)
 		if text == "" {
 			continue
@@ -216,7 +216,63 @@ func toContents(messages []chat.Message) []content {
 			},
 		})
 	}
+
+	if contextText := contextPrompt(req); contextText != "" {
+		contents = append(contents, content{
+			Role: "user",
+			Parts: []part{
+				{Text: contextText},
+			},
+		})
+	}
+
 	return contents
+}
+
+func contextPrompt(req chat.Request) string {
+	if len(req.ContextFiles) == 0 && !req.AllowFileEdits {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("Workspace context follows.\n")
+	if root := strings.TrimSpace(req.WorkspaceRoot); root != "" {
+		b.WriteString("Workspace root: ")
+		b.WriteString(root)
+		b.WriteString("\n")
+	}
+
+	if len(req.ContextFiles) > 0 {
+		b.WriteString("\nAttached files:\n")
+		for _, file := range req.ContextFiles {
+			if strings.TrimSpace(file.Path) == "" {
+				continue
+			}
+
+			b.WriteString("\nFILE ")
+			b.WriteString(file.Path)
+			b.WriteString("\n```")
+			if lang := strings.TrimSpace(file.Language); lang != "" {
+				b.WriteString(lang)
+			}
+			b.WriteString("\n")
+			b.WriteString(file.Content)
+			if !strings.HasSuffix(file.Content, "\n") {
+				b.WriteString("\n")
+			}
+			b.WriteString("```\n")
+		}
+	}
+
+	if req.AllowFileEdits {
+		b.WriteString("\nIf the user asks you to create or edit files, return the proposed files using one or more fenced code blocks in exactly this format:\n")
+		b.WriteString("```gopilot-file path=relative/path/from/workspace\n")
+		b.WriteString("full file contents here\n")
+		b.WriteString("```\n")
+		b.WriteString("Only include blocks for files that should be written. Keep explanations outside the fenced blocks.\n")
+	}
+
+	return strings.TrimSpace(b.String())
 }
 
 func (b *Backend) forwardStream(ctx context.Context, stream io.ReadCloser, events chan<- chat.StreamEvent) {

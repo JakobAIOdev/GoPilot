@@ -7,9 +7,18 @@ type Message struct {
 	Content string
 }
 
+type ContextFile struct {
+	Path     string
+	Language string
+	Content  string
+}
+
 type Request struct {
-	Model    string
-	Messages []Message
+	Model          string
+	Messages       []Message
+	WorkspaceRoot  string
+	ContextFiles   []ContextFile
+	AllowFileEdits bool
 }
 
 type StreamEvent struct {

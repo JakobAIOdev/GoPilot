@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/atotto/clipboard"
@@ -49,6 +50,8 @@ type model struct {
 	backend        chat.Backend
 	models         []string
 	modelIndex     int
+	workspaceRoot  string
+	contextFiles   []chat.ContextFile
 	ready          bool
 	waiting        bool
 	choosingModel  bool
@@ -61,8 +64,7 @@ type model struct {
 	cancelStream   context.CancelFunc
 	streamBuffer   strings.Builder
 	flushScheduled bool
-	pendingModel   string
-	pendingHistory []chat.Message
+	pendingRequest chat.Request
 	retryCount     int
 }
 
@@ -85,11 +87,12 @@ func newModel() model {
 	vp.SoftWrap = true
 
 	m := model{
-		input:      ti,
-		viewport:   vp,
-		backend:    gemini.NewBackend(),
-		models:     availableModels(),
-		modelIndex: 0,
+		input:         ti,
+		viewport:      vp,
+		backend:       gemini.NewBackend(),
+		models:        availableModels(),
+		modelIndex:    0,
+		workspaceRoot: currentWorkingDir(),
 		messages: []chat.Message{
 			{From: "GoPilot", Content: initialSplash},
 		},
@@ -111,6 +114,10 @@ func (m model) currentModel() string {
 		return m.models[0]
 	}
 	return m.models[m.modelIndex]
+}
+
+func (m model) contextFilesLen() int {
+	return len(m.contextFiles)
 }
 
 func (m *model) cycleModel(step int) {
@@ -149,11 +156,10 @@ func (m *model) resetConversation() {
 	m.stream = nil
 	m.waiting = false
 	m.sharedHistory = nil
-	m.pendingModel = ""
-	m.pendingHistory = nil
+	m.pendingRequest = chat.Request{}
 	m.retryCount = 0
 	m.messages = []chat.Message{
-		{From: "GoPilot", Content: "Conversation cleared. Shared context is empty now."},
+		{From: "GoPilot", Content: fmt.Sprintf("Conversation cleared. %d file(s) still attached.", len(m.contextFiles))},
 	}
 }
 
@@ -201,6 +207,91 @@ func (m *model) handleSlashCommand(input string) bool {
 	}
 
 	switch fields[0] {
+	case "/add":
+		pathArg := strings.TrimSpace(strings.TrimPrefix(input, "/add"))
+		if pathArg == "" {
+			m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: "Usage: /add <file>"})
+			return true
+		}
+
+		file, err := loadContextFile(m.workspaceRoot, pathArg)
+		if err != nil {
+			m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Attach failed: %v", err)})
+			return true
+		}
+
+		for i, existing := range m.contextFiles {
+			if existing.Path == file.Path {
+				m.contextFiles[i] = file
+				m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Updated attached file `%s`.", file.Path)})
+				return true
+			}
+		}
+
+		m.contextFiles = append(m.contextFiles, file)
+		m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Attached `%s` as file context.", file.Path)})
+		return true
+	case "/drop":
+		pathArg := strings.TrimSpace(strings.TrimPrefix(input, "/drop"))
+		if pathArg == "" {
+			m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: "Usage: /drop <file>"})
+			return true
+		}
+
+		relPath, _, err := normalizeWorkspacePath(m.workspaceRoot, pathArg)
+		if err != nil {
+			m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Drop failed: %v", err)})
+			return true
+		}
+
+		next := m.contextFiles[:0]
+		found := false
+		for _, file := range m.contextFiles {
+			if file.Path == relPath {
+				found = true
+				continue
+			}
+			next = append(next, file)
+		}
+		m.contextFiles = next
+		if !found {
+			m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("`%s` is not attached.", relPath)})
+			return true
+		}
+
+		m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Removed `%s` from file context.", relPath)})
+		return true
+	case "/files":
+		m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: contextFileList(m.contextFiles)})
+		return true
+	case "/apply":
+		last := lastAssistantMessage(m.messages)
+		if last == "" {
+			m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: "Nothing to apply yet."})
+			return true
+		}
+
+		written, err := applyProposedFileEdits(m.workspaceRoot, last)
+		if err != nil {
+			m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Apply failed: %v", err)})
+			return true
+		}
+
+		for i, file := range m.contextFiles {
+			for _, path := range written {
+				if file.Path != path {
+					continue
+				}
+				updated, loadErr := loadContextFile(m.workspaceRoot, path)
+				if loadErr == nil {
+					m.contextFiles[i] = updated
+				}
+				break
+			}
+		}
+
+		m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Applied %d file(s):\n- %s", len(written), strings.Join(written, "\n- "))})
+		return true
 	case "/model":
 		if len(fields) == 1 {
 			m.openModelMenu()
@@ -258,4 +349,12 @@ func (m *model) handleSlashCommand(input string) bool {
 		m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: fmt.Sprintf("Unknown command %q.", fields[0])})
 		return true
 	}
+}
+
+func currentWorkingDir() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "."
+	}
+	return wd
 }

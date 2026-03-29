@@ -9,7 +9,7 @@ import (
 )
 
 const appVerticalPadding = 2
-const classicLayoutWidth = 84
+const classicLayoutWidth = 104
 
 type markdownBlock struct {
 	kind string
@@ -41,10 +41,11 @@ func renderMessage(msg string, from string, width int) string {
 		)
 	}
 
+	bubbleWidth := min(max(width, 30), 92)
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
 		assistantNameStyle.Render("gopilot"),
-		renderAssistantMarkdown(msg, min(max(width, 28), 76)),
+		assistantBubbleStyle.Width(bubbleWidth).MaxWidth(bubbleWidth).Render(renderAssistantMarkdown(msg, bubbleWidth)),
 	)
 }
 
@@ -141,7 +142,7 @@ func renderMarkdownText(text string, width int) string {
 		}
 
 		if strings.HasPrefix(trimmed, "* ") || strings.HasPrefix(trimmed, "- ") {
-			renderedLines = append(renderedLines, "• "+cleanInlineMarkdown(strings.TrimSpace(trimmed[2:])))
+			renderedLines = append(renderedLines, assistantBulletStyle.Render("•")+" "+cleanInlineMarkdown(strings.TrimSpace(trimmed[2:])))
 			continue
 		}
 
@@ -153,7 +154,16 @@ func renderMarkdownText(text string, width int) string {
 
 func renderCodeBlock(block markdownBlock, width int) string {
 	content := strings.TrimRight(block.text, "\n")
-	return codeBlockStyle.Width(width).Render(content)
+	if strings.TrimSpace(block.lang) == "" {
+		return codeBlockStyle.MaxWidth(width).Render(content)
+	}
+
+	label := codeLangStyle.Render(strings.ToLower(block.lang))
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		label,
+		codeBlockStyle.MaxWidth(width).Render(content),
+	)
 }
 
 func cleanInlineMarkdown(text string) string {
@@ -181,14 +191,14 @@ func (m *model) refreshLayout() {
 		return
 	}
 
-	contentWidth := max(m.panelW, 36)
+	contentWidth := min(max(m.panelW, 36), classicLayoutWidth)
 	viewportWidth := max(contentWidth-4, 28)
 	inputWidth := max(contentWidth-4, 20)
 
 	m.viewport.SetWidth(viewportWidth)
 	m.input.SetWidth(inputWidth)
 
-	statusText := fmt.Sprintf("%d msgs  •  Enter send  •  /model  •  /copy  •  /plain  •  Esc quit", len(m.messages))
+	statusText := fmt.Sprintf("%d msgs  •  Enter send  •  /model  •  /add  •  /files  •  /apply  •  /copy  •  /plain  •  Esc quit", len(m.messages))
 	if m.waiting {
 		statusText = fmt.Sprintf("%s  •  streaming from %s", statusText, m.currentModel())
 	}
@@ -259,11 +269,13 @@ func (m model) View() tea.View {
 		plain := lastAssistantMessage(m.messages)
 		if plain == "" {
 			plain = "Nothing to show."
+		} else {
+			plain = plainViewContent(plain)
 		}
 
-		hint := plainHintStyle.Render("Plain view  •  Esc back")
 		content := plainTextStyle.Render(plain)
-		layout := lipgloss.JoinVertical(lipgloss.Left, hint, "", content)
+		hint := plainHintStyle.Render("Esc back")
+		layout := lipgloss.JoinVertical(lipgloss.Left, content, "", hint)
 
 		v := tea.NewView(layout)
 		v.AltScreen = true
@@ -271,7 +283,7 @@ func (m model) View() tea.View {
 		return v
 	}
 
-	statusText := fmt.Sprintf("%d msgs  •  Enter send  •  /model  •  /copy  •  /plain  •  Esc quit", len(m.messages))
+	statusText := fmt.Sprintf("%d msgs  •  Enter send  •  /model  •  /add  •  /files  •  /apply  •  /copy  •  /plain  •  Esc quit", len(m.messages))
 	if m.waiting {
 		statusText = fmt.Sprintf("%s  •  streaming from %s", statusText, m.currentModel())
 	}
@@ -283,7 +295,9 @@ func (m model) View() tea.View {
 	status := statusStyle.Width(contentWidth).Render(statusText)
 	conversation := panelStyle.Width(contentWidth).Render(m.viewport.View())
 	inputCard := inputFrameStyle.Width(contentWidth).Render(m.input.View())
-	inputMeta := inputMetaStyle.Width(contentWidth).Render(fmt.Sprintf("Current model: %s", m.currentModel()))
+	inputMeta := inputMetaStyle.Width(contentWidth).Render(
+		fmt.Sprintf("%s  •  %s  •  %s  •  %d attached", assistantLabelStyle.Render("model"), m.currentModel(), assistantLabelStyle.Render("workspace"), m.contextFilesLen()),
+	)
 
 	menu := ""
 	if m.choosingModel {
@@ -307,10 +321,6 @@ func (m model) View() tea.View {
 	)
 
 	layout := appStyle.Render(content)
-	if m.width > 0 {
-		layout = lipgloss.PlaceHorizontal(m.width, lipgloss.Center, layout)
-	}
-
 	v := tea.NewView(layout)
 	v.AltScreen = true
 	v.WindowTitle = windowTitle
