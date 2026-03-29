@@ -24,9 +24,17 @@ const (
 	oauthClientID        = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
 	oauthClientSecret    = "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"
 	freeTierID           = "free-tier"
-	streamRetryCount     = 3
-	streamRetryDelay     = 1200 * time.Millisecond
+	streamRetryCount     = 4
+	retryBaseDelay       = 1500 * time.Millisecond
+	retryMaxDelay        = 15 * time.Second
 )
+
+const systemPrompt = `You are GoPilot, a helpful AI coding assistant running inside a terminal.
+You help the user understand, write, debug, and refactor code.
+Be concise but thorough. Prefer showing code over lengthy explanations.
+When showing code, always use fenced code blocks with the language identifier.
+If the user provides workspace files as context, reference them by path.
+When asked to create or edit files, use the gopilot-file format as instructed in the workspace context.`
 
 type Backend struct {
 	httpClient *http.Client
@@ -47,8 +55,9 @@ type generateContentRequest struct {
 }
 
 type vertexGenerateContentRequest struct {
-	Contents  []content `json:"contents"`
-	SessionID string    `json:"session_id,omitempty"`
+	Contents          []content `json:"contents"`
+	SystemInstruction *content  `json:"system_instruction,omitempty"`
+	SessionID         string    `json:"session_id,omitempty"`
 }
 
 type content struct {
@@ -161,10 +170,7 @@ func (b *Backend) Stream(ctx context.Context, req chat.Request) (<-chan chat.Str
 	if b.timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, b.timeout)
-		go func() {
-			<-ctx.Done()
-			cancel()
-		}()
+		_ = cancel // cancel is owned by the caller via streamStartedMsg.cancel
 	}
 
 	events := make(chan chat.StreamEvent)
@@ -210,6 +216,9 @@ func (b *Backend) Stream(ctx context.Context, req chat.Request) (<-chan chat.Str
 			UserPromptID: newPromptID(),
 			Request: vertexGenerateContentRequest{
 				Contents: toContents(req),
+				SystemInstruction: &content{
+					Parts: []part{{Text: systemPrompt}},
+				},
 			},
 		}
 
@@ -235,6 +244,17 @@ func (b *Backend) Stream(ctx context.Context, req chat.Request) (<-chan chat.Str
 
 func toContents(req chat.Request) []content {
 	contents := make([]content, 0, len(req.Messages)+1)
+
+	// Inject workspace context first so the model sees files before conversation
+	if contextText := contextPrompt(req); contextText != "" {
+		contents = append(contents, content{
+			Role: "user",
+			Parts: []part{
+				{Text: contextText},
+			},
+		})
+	}
+
 	for _, msg := range req.Messages {
 		text := strings.TrimSpace(msg.Content)
 		if text == "" {
@@ -250,15 +270,6 @@ func toContents(req chat.Request) []content {
 			Role: role,
 			Parts: []part{
 				{Text: text},
-			},
-		})
-	}
-
-	if contextText := contextPrompt(req); contextText != "" {
-		contents = append(contents, content{
-			Role: "user",
-			Parts: []part{
-				{Text: contextText},
 			},
 		})
 	}
@@ -302,13 +313,17 @@ func contextPrompt(req chat.Request) string {
 	}
 
 	if req.AllowFileEdits {
-		b.WriteString("\nIf the user asks you to create or edit files, return the proposed files using one or more fenced code blocks in exactly this format:\n")
+		b.WriteString("\nWhen the user asks you to create or edit files, return proposed changes using fenced code blocks in this exact format:\n")
 		b.WriteString("```gopilot-file path=relative/path/from/workspace\n")
 		b.WriteString("full file contents here\n")
 		b.WriteString("```\n")
-		b.WriteString("Only include blocks for files that should be written. Keep explanations outside the fenced blocks.\n")
-		b.WriteString("When the user is asking for changes to an existing project file such as README.md, package metadata, config files, or source files, prefer returning `gopilot-file` blocks instead of prose-only output.\n")
-		b.WriteString("If the user is only asking a question or requesting analysis, answer normally without file blocks.\n")
+		b.WriteString("\nRules for file edits:\n")
+		b.WriteString("- Use paths relative to the workspace root\n")
+		b.WriteString("- Include the COMPLETE file content, not just the changed parts\n")
+		b.WriteString("- Preserve original indentation style (tabs vs spaces)\n")
+		b.WriteString("- Only include blocks for files that need changes\n")
+		b.WriteString("- Keep explanations outside the fenced blocks\n")
+		b.WriteString("- If the user is only asking a question or requesting analysis, answer normally without file blocks\n")
 	}
 
 	return strings.TrimSpace(b.String())
@@ -560,6 +575,29 @@ func (b *Backend) getJSON(ctx context.Context, accessToken string, endpoint stri
 	return nil
 }
 
+func retryDelay(attempt int) time.Duration {
+	delay := retryBaseDelay
+	for i := 0; i < attempt; i++ {
+		delay = delay * 2
+		if delay > retryMaxDelay {
+			delay = retryMaxDelay
+			break
+		}
+	}
+	// Add jitter ±20%
+	var jitter [1]byte
+	if _, err := rand.Read(jitter[:]); err == nil {
+		fraction := float64(jitter[0]) / 255.0 // 0.0 to 1.0
+		jitterRange := float64(delay) * 0.4     // total range 40%
+		delay = time.Duration(float64(delay) - jitterRange/2 + jitterRange*fraction)
+	}
+	return delay
+}
+
+func isRetryableStatusCode(code int) bool {
+	return code == 429 || code == 503 || code == 502 || code == 500
+}
+
 func (b *Backend) openStream(ctx context.Context, accessToken string, endpoint string, payload any) (io.ReadCloser, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -572,7 +610,7 @@ func (b *Backend) openStream(ctx context.Context, accessToken string, endpoint s
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
-			case <-time.After(time.Duration(attempt) * streamRetryDelay):
+			case <-time.After(retryDelay(attempt)):
 			}
 		}
 
@@ -602,11 +640,14 @@ func (b *Backend) openStream(ctx context.Context, accessToken string, endpoint s
 		}
 		if json.Unmarshal(raw, &wrapper) == nil && wrapper.Error != nil {
 			lastErr = fmt.Errorf("%s (%d %s)", wrapper.Error.Message, wrapper.Error.Code, wrapper.Error.Status)
-			return nil, lastErr
+		} else {
+			lastErr = decodeAPIError(resp.Status, raw)
 		}
 
-		lastErr = decodeAPIError(resp.Status, raw)
-		return nil, lastErr
+		// Retry on 429/5xx, abort immediately on client errors
+		if !isRetryableStatusCode(resp.StatusCode) {
+			return nil, lastErr
+		}
 	}
 
 	return nil, lastErr
@@ -623,13 +664,12 @@ func (b *Backend) operationURL(name string) string {
 func extractText(content content) string {
 	var parts []string
 	for _, part := range content.Parts {
-		text := strings.TrimSpace(part.Text)
-		if text == "" {
+		if part.Text == "" {
 			continue
 		}
-		parts = append(parts, text)
+		parts = append(parts, part.Text)
 	}
-	return strings.TrimSpace(strings.Join(parts, "\n\n"))
+	return strings.TrimRight(strings.Join(parts, ""), "\n")
 }
 
 func (b *Backend) ineligibleOrProjectError(resp loadCodeAssistResponse) error {
