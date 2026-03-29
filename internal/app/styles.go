@@ -130,4 +130,12 @@ var (
 
 	editProposalHintStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#8E9785"))
+
+	inlineCodeStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#E0C097")).
+				Background(lipgloss.Color("#2A2A2A"))
+
+	inlineBoldStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#F5F5F5")).
+				Bold(true)
 )
