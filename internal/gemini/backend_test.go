@@ -42,7 +42,7 @@ func TestContextPromptPrefersFileBlocksForEdits(t *testing.T) {
 		AllowFileEdits: true,
 	})
 
-	if !strings.Contains(text, "prefer returning `gopilot-file` blocks instead of prose-only output") {
-		t.Fatalf("expected stronger file-edit guidance, got %q", text)
+	if !strings.Contains(text, "Include the COMPLETE file content") {
+		t.Fatalf("expected file-edit guidance, got %q", text)
 	}
 }
