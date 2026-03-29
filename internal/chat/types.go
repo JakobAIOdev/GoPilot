@@ -22,6 +22,7 @@ type Request struct {
 }
 
 type StreamEvent struct {
+	Status string
 	Text string
 	Done bool
 	Err  error

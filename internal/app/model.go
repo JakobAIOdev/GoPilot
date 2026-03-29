@@ -28,6 +28,25 @@ var initialSplash = strings.Join([]string{
 	"Ready for prompts.",
 }, "\n")
 
+func pendingAssistantMessage(modelName string, attachedCount int) string {
+	if attachedCount > 0 {
+		return fmt.Sprintf("`%s`\nThinking...\nUsing %d attached file(s)", modelName, attachedCount)
+	}
+	return fmt.Sprintf("`%s`\nThinking...", modelName)
+}
+
+func isPendingAssistantMessage(text string) bool {
+	return strings.HasPrefix(text, "`") && strings.Contains(text, "\n")
+}
+
+func formatAssistantStatus(modelName string, status string, attachedCount int) string {
+	lines := []string{fmt.Sprintf("`%s`", modelName), strings.TrimSpace(status)}
+	if attachedCount > 0 {
+		lines = append(lines, fmt.Sprintf("Using %d attached file(s)", attachedCount))
+	}
+	return strings.Join(lines, "\n")
+}
+
 type streamMsg struct {
 	event chat.StreamEvent
 }
@@ -144,14 +163,27 @@ func (m *model) refreshCompletions() {
 	current := m.input.Value()
 	cursor := m.input.Position()
 	completions, start, end := autocompleteSuggestions(current, cursor, m.workspaceRoot, m.models, m.contextFiles)
+	segment := ""
 	if start >= 0 && start <= cursor && cursor <= len(current) {
-		m.completionBase = current[start:cursor]
+		segment = current[start:cursor]
+		m.completionBase = segment
 	} else {
 		m.completionBase = ""
 	}
-	m.completions = completions
 	m.completionStart = start
 	m.completionEnd = end
+	if len(completions) > 0 && containsString(completions, strings.TrimSpace(segment)) {
+		completions = nil
+	}
+	if len(completions) > 0 {
+		for _, completion := range completions {
+			if completionEqualsSegment(completion, segment) {
+				completions = nil
+				break
+			}
+		}
+	}
+	m.completions = completions
 	if len(m.completions) == 0 {
 		m.completionIndex = 0
 		return
@@ -195,6 +227,25 @@ func (m *model) cycleCompletion(step int) {
 		return
 	}
 	m.completionIndex = (m.completionIndex + step + len(m.completions)) % len(m.completions)
+}
+
+func (m *model) shouldApplyCompletionOnEnter() bool {
+	if !m.hasCompletions() {
+		return false
+	}
+	if m.completionIndex < 0 || m.completionIndex >= len(m.completions) {
+		return false
+	}
+
+	current := m.input.Value()
+	cursor := m.input.Position()
+	if m.completionStart < 0 || m.completionStart > cursor || cursor > len(current) {
+		return false
+	}
+
+	segment := current[m.completionStart:cursor]
+	selected := m.completions[m.completionIndex]
+	return !completionEqualsSegment(selected, segment)
 }
 
 func (m *model) cycleModel(step int) {
@@ -267,7 +318,12 @@ func (m *model) flushPendingStreamText() {
 		return
 	}
 
-	m.appendToLastAssistantMessage(m.streamBuffer.String())
+	last := lastAssistantMessage(m.messages)
+	if isPendingAssistantMessage(last) {
+		m.replaceLastAssistantMessage(m.streamBuffer.String())
+	} else {
+		m.appendToLastAssistantMessage(m.streamBuffer.String())
+	}
 	m.streamBuffer.Reset()
 	m.syncViewport()
 	m.viewport.GotoBottom()
@@ -275,7 +331,7 @@ func (m *model) flushPendingStreamText() {
 
 func (m *model) submitPrompt(userText string) {
 	m.messages = append(m.messages, chat.Message{From: "User", Content: userText})
-	m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: ""})
+	m.messages = append(m.messages, chat.Message{From: "GoPilot", Content: pendingAssistantMessage(m.currentModel(), len(m.contextFiles))})
 	m.sharedHistory = append(m.sharedHistory, chat.Message{From: "User", Content: userText})
 	m.waiting = true
 	m.streamBuffer.Reset()

@@ -167,32 +167,69 @@ func (b *Backend) Stream(ctx context.Context, req chat.Request) (<-chan chat.Str
 		}()
 	}
 
-	accessToken, err := b.accessToken(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	projectID, err := b.resolveCodeAssistProject(ctx, accessToken)
-	if err != nil {
-		return nil, err
-	}
-
-	payload := generateContentRequest{
-		Model:        req.Model,
-		Project:      projectID,
-		UserPromptID: newPromptID(),
-		Request: vertexGenerateContentRequest{
-			Contents: toContents(req),
-		},
-	}
-
-	stream, err := b.openStream(ctx, accessToken, b.methodURL("streamGenerateContent"), payload)
-	if err != nil {
-		return nil, err
-	}
-
 	events := make(chan chat.StreamEvent)
-	go b.forwardStream(ctx, stream, events)
+	go func() {
+		defer close(events)
+
+		sendStatus := func(status string) bool {
+			select {
+			case <-ctx.Done():
+				return false
+			case events <- chat.StreamEvent{Status: status}:
+				return true
+			}
+		}
+
+		if !sendStatus("Authenticating...") {
+			return
+		}
+
+		accessToken, err := b.accessToken(ctx)
+		if err != nil {
+			events <- chat.StreamEvent{Err: err, Done: true}
+			return
+		}
+
+		if !sendStatus("Loading project...") {
+			return
+		}
+
+		projectID, err := b.resolveCodeAssistProject(ctx, accessToken)
+		if err != nil {
+			events <- chat.StreamEvent{Err: err, Done: true}
+			return
+		}
+
+		if !sendStatus("Preparing context...") {
+			return
+		}
+
+		payload := generateContentRequest{
+			Model:        req.Model,
+			Project:      projectID,
+			UserPromptID: newPromptID(),
+			Request: vertexGenerateContentRequest{
+				Contents: toContents(req),
+			},
+		}
+
+		if !sendStatus("Sending request...") {
+			return
+		}
+
+		stream, err := b.openStream(ctx, accessToken, b.methodURL("streamGenerateContent"), payload)
+		if err != nil {
+			events <- chat.StreamEvent{Err: err, Done: true}
+			return
+		}
+
+		if !sendStatus("Thinking...") {
+			stream.Close()
+			return
+		}
+
+		b.forwardStream(ctx, stream, events)
+	}()
 	return events, nil
 }
 
@@ -276,7 +313,6 @@ func contextPrompt(req chat.Request) string {
 }
 
 func (b *Backend) forwardStream(ctx context.Context, stream io.ReadCloser, events chan<- chat.StreamEvent) {
-	defer close(events)
 	defer stream.Close()
 
 	scanner := bufio.NewScanner(stream)

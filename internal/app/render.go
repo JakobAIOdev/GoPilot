@@ -280,7 +280,7 @@ func (m model) renderCompletions(width int) string {
 	}
 	end := min(start+limit, len(m.completions))
 	var lines []string
-	lines = append(lines, completionTitleStyle.Render("Suggestions  •  Tab/Enter apply  •  Up/Down select"))
+	lines = append(lines, completionTitleStyle.Render("Suggestions  •  Tab apply  •  Up/Down select"))
 	lines = append(lines, "")
 
 	for i := start; i < end; i++ {

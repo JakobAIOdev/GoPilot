@@ -15,7 +15,6 @@ import (
 	"github.com/JakobAIOdev/GoPilot/internal/chat"
 )
 
-var resetAfterPattern = regexp.MustCompile(`(?i)reset after ([0-9]+[smh])`)
 var gopilotFileBlockPattern = regexp.MustCompile("(?s)```gopilot-file\\s+path=([^\\n]+)\\n(.*?)```")
 
 type slashCommandSpec struct {
@@ -74,45 +73,23 @@ func formatBackendError(err error) string {
 	text := strings.TrimSpace(err.Error())
 
 	if strings.Contains(text, "RESOURCE_EXHAUSTED") {
-		if strings.Contains(strings.ToLower(text), "quota will reset after") {
-			return fmt.Sprintf("Temporary model quota hit. %s Wait briefly, then retry, or use `Ctrl+N` or `/model` to switch models.", text)
-		}
-		return fmt.Sprintf("Model quota exhausted. %s Use `Ctrl+N` or `/model` to switch models and try again.", text)
+		return fmt.Sprintf("API error: %s Please wait and try again later. You can also use `Ctrl+N` or `/model` to switch models.", text)
 	}
 
 	if strings.Contains(text, "429") {
-		return fmt.Sprintf("Request rate-limited. %s", text)
+		return fmt.Sprintf("API error: %s Please wait and try again later.", text)
 	}
 
 	return fmt.Sprintf("Request failed. %s", text)
 }
 
 func quotaRetryDelay(err error) (time.Duration, bool) {
-	if err == nil {
-		return 0, false
-	}
-
-	text := strings.TrimSpace(err.Error())
-	if !strings.Contains(text, "RESOURCE_EXHAUSTED") {
-		return 0, false
-	}
-
-	match := resetAfterPattern.FindStringSubmatch(text)
-	if len(match) != 2 {
-		return 0, false
-	}
-
-	delay, parseErr := time.ParseDuration(strings.ToLower(match[1]))
-	if parseErr != nil || delay <= 0 {
-		return 0, false
-	}
-
-	return delay, true
+	return 0, false
 }
 
 func formatRetryNotice(err error, delay time.Duration) string {
 	text := strings.TrimSpace(err.Error())
-	return fmt.Sprintf("Temporary model quota hit. %s Retrying automatically in %s.", text, delay.Round(time.Second))
+	return fmt.Sprintf("API error: %s Retrying automatically in %s.", text, delay.Round(time.Second))
 }
 
 func lastAssistantMessage(messages []chat.Message) string {
@@ -635,6 +612,16 @@ func containsString(items []string, target string) bool {
 		if item == target {
 			return true
 		}
+	}
+	return false
+}
+
+func completionEqualsSegment(completion string, segment string) bool {
+	if completion == segment {
+		return true
+	}
+	if slashCommandNeedsValue(completion) && completion+" " == segment {
+		return true
 	}
 	return false
 }

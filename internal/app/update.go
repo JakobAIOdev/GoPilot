@@ -65,6 +65,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case streamMsg:
+		if strings.TrimSpace(msg.event.Status) != "" {
+			m.replaceLastAssistantMessage(formatAssistantStatus(m.currentModel(), msg.event.Status, len(m.pendingRequest.ContextFiles)))
+			m.refreshLayout()
+			m.syncViewport()
+			m.viewport.GotoBottom()
+			return m, waitForStreamEvent(m.stream)
+		}
+
 		if msg.event.Err != nil {
 			m.waiting = false
 			m.stream = nil
@@ -134,7 +142,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.waiting = true
 		m.streamBuffer.Reset()
 		m.flushScheduled = false
-		m.replaceLastAssistantMessage("")
+		m.replaceLastAssistantMessage(formatAssistantStatus(m.pendingRequest.Model, "Retrying request...", len(m.pendingRequest.ContextFiles)))
 		m.refreshLayout()
 		m.syncViewport()
 		m.viewport.GotoBottom()
@@ -271,8 +279,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.waiting {
 				return m, nil
 			}
-
-			if m.hasCompletions() {
+			m.refreshCompletions()
+			if m.shouldApplyCompletionOnEnter() {
 				m.applySelectedCompletion()
 				m.refreshLayout()
 				return m, nil
