@@ -1,0 +1,64 @@
+version: 2
+
+project_name: gopilot
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: gopilot
+    main: ./cmd/gopilot
+    binary: gopilot
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - id: gopilot
+    ids:
+      - gopilot
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- .Arch }}
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: git
+
+brews:
+  - name: gopilot
+    repository:
+      owner: JakobAIOdev
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: https://github.com/JakobAIOdev/GoPilot
+    description: Terminal-based AI coding assistant powered by Google Gemini
+    license: MIT
+    install: |
+      bin.install "gopilot"
+    test: |
+      system "#{bin}/gopilot", "--version"
