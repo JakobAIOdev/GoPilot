@@ -12,7 +12,7 @@ import (
 )
 
 const streamFlushInterval = 40 * time.Millisecond
-const maxAutoRetries = 1
+const maxAutoRetries = 3
 
 func waitForStreamEvent(stream <-chan chat.StreamEvent) tea.Cmd {
 	return func() tea.Msg {
