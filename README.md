@@ -182,6 +182,12 @@ GoPilot/
 - [Lip Gloss](https://github.com/charmbracelet/lipgloss) — Style definitions
 - [Chroma](https://github.com/alecthomas/chroma) — Syntax highlighting
 
+## Roadmap
+
+- **MCP Servers Integration** — Direct support for Model Context Protocol (MCP) servers to give the AI access to local tools and resources.
+- **`GOPILOT.md` Instructions** — Define project-specific AI rules, context, and system prompts by committing a `GOPILOT.md` file to your repository.
+- **Enhanced Linter Integration** — Automatic detection and feeding of workspace compilation errors back to the model.
+
 ## Contributing
 
 1. Fork the repository
