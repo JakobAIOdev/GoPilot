@@ -13,12 +13,12 @@ A experimental terminal-based AI coding assistant built with Goland powered by G
 ## Features
 
 - **Stream responses** — Real-time streaming from Gemini models with live markdown rendering
-- **File context** — Attach workspace files for code-aware conversations
+- **File context** — Attach workspace files for code-aware conversations (respects `.gitignore`)
 - **File editing** — AI proposes edits in `gopilot-file` blocks, apply with `/apply`, revert with `/undo`
-- **Session persistence** — Automatic session save/load with searchable history
+- **Session persistence** — Automatic session save/load with structured and searchable history
 - **Multiple models** — Switch between Gemini models on the fly
 - **Smart autocomplete** — Tab-completion for commands, file paths, and model names
-- **Inline code highlighting** — Proper rendering of code blocks, inline code, and markdown
+- **Rich code highlighting** — Chroma-powered syntax highlighting for code blocks, inline code, and markdown
 - **Copy to clipboard** — Copy full responses or specific code blocks
 - **Exponential backoff** — Automatic retry on rate limits (429) with jitter
 
@@ -180,6 +180,7 @@ GoPilot/
 - [Bubble Tea](https://github.com/charmbracelet/bubbletea) — Terminal UI framework
 - [Bubbles](https://github.com/charmbracelet/bubbles) — TUI components
 - [Lip Gloss](https://github.com/charmbracelet/lipgloss) — Style definitions
+- [Chroma](https://github.com/alecthomas/chroma) — Syntax highlighting
 
 ## Contributing
 
