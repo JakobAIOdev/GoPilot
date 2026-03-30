@@ -1,12 +1,14 @@
 package app
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/alecthomas/chroma/v2/quick"
 
 	"github.com/JakobAIOdev/GoPilot/internal/chat"
 )
@@ -35,6 +37,24 @@ func relativeTime(t time.Time) string {
 	default:
 		return t.Format("2006-01-02")
 	}
+}
+
+func sessionCategory(t time.Time) string {
+	now := time.Now()
+	if t.Year() == now.Year() && t.YearDay() == now.YearDay() {
+		return "Today"
+	}
+	yesterday := now.AddDate(0, 0, -1)
+	if t.Year() == yesterday.Year() && t.YearDay() == yesterday.YearDay() {
+		return "Yesterday"
+	}
+	if time.Since(t) < 7*24*time.Hour {
+		return "Last 7 Days"
+	}
+	if time.Since(t) < 30*24*time.Hour {
+		return "Last 30 Days"
+	}
+	return "Older"
 }
 
 const appVerticalPadding = 2
@@ -209,11 +229,20 @@ func renderMarkdownText(text string, width int) string {
 
 func renderCodeBlock(block markdownBlock, width int) string {
 	content := strings.TrimRight(block.text, "\n")
-	if strings.TrimSpace(block.lang) == "" {
+	lang := strings.TrimSpace(block.lang)
+
+	if lang != "" {
+		var b bytes.Buffer
+		if err := quick.Highlight(&b, content, lang, "terminal256", "monokai"); err == nil {
+			content = b.String()
+		}
+	}
+
+	if lang == "" {
 		return codeBlockStyle.MaxWidth(width).Render(content)
 	}
 
-	label := codeLangStyle.Render(strings.ToLower(block.lang))
+	label := codeLangStyle.Render(strings.ToLower(lang))
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
 		label,
@@ -509,14 +538,27 @@ func (m model) renderSessionMenu(width int) string {
 	}
 	end := min(start+limit, len(items))
 
+	lastCategory := ""
+	categoryHeaderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#555555")).Bold(true).PaddingTop(1)
+
 	for i := start; i < end; i++ {
+		cat := sessionCategory(items[i].UpdatedAt)
+		if cat != lastCategory {
+			if lastCategory == "" && i > 0 {
+				lastCategory = cat // don't draw top padding if it's the middle of a paginated list
+			} else {
+				lines = append(lines, categoryHeaderStyle.Render(fmt.Sprintf("  --- %s ---", cat)))
+				lastCategory = cat
+			}
+		}
+
 		prefix := "  "
 		style := menuItemStyle
 		if i == m.sessionMenuIndex {
 			prefix = "> "
 			style = menuSelectedStyle
 		}
-		label := fmt.Sprintf("%s%s  •  %s  •  %d msgs  •  %s", prefix, items[i].ID, relativeTime(items[i].UpdatedAt), items[i].MessageCount, items[i].Title)
+		label := fmt.Sprintf("%s%-15s  •  %-14s  •  %3d msgs  •  %s", prefix, items[i].ID[:15], relativeTime(items[i].UpdatedAt), items[i].MessageCount, items[i].Title)
 		lines = append(lines, style.Render(label))
 	}
 
@@ -532,6 +574,8 @@ func (m model) View() tea.View {
 	if !m.ready {
 		v := tea.NewView(loadingStyle.Render("Loading GoPilot..."))
 		v.WindowTitle = windowTitle
+		v.AltScreen = true
+		v.MouseMode = tea.MouseModeCellMotion
 		return v
 	}
 
@@ -549,6 +593,8 @@ func (m model) View() tea.View {
 
 		v := tea.NewView(layout)
 		v.WindowTitle = windowTitle
+		v.AltScreen = true
+		v.MouseMode = tea.MouseModeCellMotion
 		return v
 	}
 
@@ -593,5 +639,7 @@ func (m model) View() tea.View {
 	)
 	v := tea.NewView(layout)
 	v.WindowTitle = windowTitle
+	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
 	return v
 }

@@ -14,6 +14,7 @@ import (
 	"unicode"
 
 	"github.com/JakobAIOdev/GoPilot/internal/chat"
+	ignore "github.com/sabhiram/go-gitignore"
 )
 
 var gopilotFileBlockPattern = regexp.MustCompile("(?s)```gopilot-file\\s+path=([^\\n]+)\\n(.*?)```")
@@ -395,10 +396,25 @@ func loadContextTargets(workspaceRoot string, inputPath string) ([]chat.ContextF
 	}
 
 	var files []chat.ContextFile
+	ignorer, _ := ignore.CompileIgnoreFile(filepath.Join(workspaceRoot, ".gitignore"))
+
 	err = filepath.WalkDir(absPath, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
+
+		rel, err := filepath.Rel(workspaceRoot, path)
+		if err != nil {
+			return nil
+		}
+
+		if ignorer != nil && ignorer.MatchesPath(rel) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
 		if d.IsDir() {
 			if shouldSkipDir(d.Name()) {
 				return filepath.SkipDir
@@ -408,11 +424,6 @@ func loadContextTargets(workspaceRoot string, inputPath string) ([]chat.ContextF
 
 		fileInfo, err := d.Info()
 		if err != nil || fileInfo.Size() > 256*1024 {
-			return nil
-		}
-
-		rel, err := filepath.Rel(workspaceRoot, path)
-		if err != nil {
 			return nil
 		}
 
