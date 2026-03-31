@@ -119,6 +119,12 @@ type model struct {
 }
 
 func newModel() model {
+	m := newModelBase()
+	m.saveSession()
+	return m
+}
+
+func newModelBase() model {
 	ti := textinput.New()
 	ti.Prompt = "ask > "
 	ti.Placeholder = "Type a prompt and press Enter"
@@ -150,7 +156,6 @@ func newModel() model {
 		},
 	}
 	m.refreshProjectInstructions()
-	m.saveSession()
 
 	m.syncViewport()
 	return m

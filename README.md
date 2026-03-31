@@ -91,6 +91,19 @@ gopilot
 GoPilot uses the current working directory as the workspace root. Attach files, ask questions, and let the AI suggest code changes.
 If the repository contains a `GOPILOT.md` file, GoPilot automatically loads it and appends its contents to the model's system instructions for that workspace.
 
+### CLI Flags
+
+| Flag | Description |
+|------|-------------|
+| `--version`, `-v` | Print the current GoPilot version |
+| `--load <session-id>` | Open GoPilot and preload a saved session |
+
+Example:
+
+```bash
+gopilot --load 20260331-182708-d81dca6c
+```
+
 ### Quick Start
 
 1. Start GoPilot in your project: `gopilot`
@@ -153,7 +166,10 @@ GoPilot uses environment variables for optional configuration:
 |----------|---------|-------------|
 | `GEMINI_API_BASE_URL` | `https://cloudcode-pa.googleapis.com/v1internal` | API endpoint |
 
-Sessions are stored in `~/.config/gopilot/sessions/` (macOS/Linux).
+Sessions are stored in the OS user config directory, for example:
+
+- macOS: `~/Library/Application Support/gopilot/sessions/`
+- Linux: `~/.config/gopilot/sessions/`
 
 ## Project Structure
 
@@ -188,6 +204,12 @@ GoPilot/
 
 - **MCP Servers Integration** — Direct support for Model Context Protocol (MCP) servers to give the AI access to local tools and resources.
 - **Enhanced Linter Integration** — Automatic detection and feeding of workspace compilation errors back to the model.
+- **Startup Context Flags** — Launch with preloaded files, codebase context, or a preferred model directly from the CLI.
+- **Session Resume UX** — Better exit summaries, recent-session shortcuts, and one-key resume flows.
+- **Project Diagnostics Panel** — Surface build, test, and lint failures in the UI without leaving the chat loop.
+- **Diff Review Before Apply** — Preview proposed file edits as diffs before writing them to disk.
+- **Searchable Session Picker** — Faster session recovery with richer filters, previews, and sorting.
+- **Repo-Aware Instructions** — Support instruction layering such as personal defaults plus per-repository `GOPILOT.md`.
 
 ## Contributing
 
