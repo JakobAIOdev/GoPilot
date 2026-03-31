@@ -104,9 +104,6 @@ var (
 				Foreground(lipgloss.Color("#D0D0D0")).
 				Bold(true)
 
-	assistantLabelStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#8A8A8A"))
-
 	codeLangStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#8A8A8A")).
 			Bold(true)
@@ -132,10 +129,10 @@ var (
 				Foreground(lipgloss.Color("#8E9785"))
 
 	inlineCodeStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#E0C097")).
-				Background(lipgloss.Color("#2A2A2A"))
+			Foreground(lipgloss.Color("#E0C097")).
+			Background(lipgloss.Color("#2A2A2A"))
 
 	inlineBoldStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#F5F5F5")).
-				Bold(true)
+			Foreground(lipgloss.Color("#F5F5F5")).
+			Bold(true)
 )
