@@ -91,6 +91,26 @@ gopilot
 GoPilot uses the current working directory as the workspace root. Attach files, ask questions, and let the AI suggest code changes.
 If the repository contains a `GOPILOT.md` file, GoPilot automatically loads it and appends its contents to the model's system instructions for that workspace.
 
+## How It Works
+
+GoPilot is split into two main runtime layers:
+
+- `internal/app` handles the terminal UI, slash commands, sessions, file attachments, apply/undo, and markdown rendering
+- `internal/gemini` handles OAuth, Gemini Code Assist project resolution, request construction, retries, and streaming responses
+
+At runtime the flow looks like this:
+
+1. `gopilot` starts the Bubble Tea app
+2. the current working directory becomes the workspace root
+3. optional repository instructions are loaded from `GOPILOT.md`
+4. attached files are packed into workspace context
+5. prompts are sent to Gemini with conversation history plus file context
+6. responses stream back live into the TUI
+7. when the model returns `gopilot-file` blocks, `/apply` can write them to disk
+8. every conversation is saved as a resumable session
+
+For a more detailed explanation of architecture, request flow, sessions, context loading, and file editing, see [docs/HOW_GOPILOT_WORKS.md](./docs/HOW_GOPILOT_WORKS.md).
+
 ### CLI Flags
 
 | Flag | Description |
@@ -111,6 +131,20 @@ gopilot --load 20260331-182708-d81dca6c
 3. Or attach the whole codebase: `/codebase`
 4. Ask your question: `What does this code do?`
 5. If the AI suggests edits: `/apply` to accept, `/undo` to revert
+
+### Typical Workflow
+
+GoPilot is designed around an explicit review-and-apply loop:
+
+1. Start in the repository you want to work on
+2. Attach only the files you want the model to inspect, or use `/codebase`
+3. Ask for analysis, refactors, fixes, or new code
+4. Read the streamed answer directly in the terminal
+5. If the answer contains `gopilot-file` blocks, apply them with `/apply`
+6. If needed, revert the last apply with `/undo`
+7. Resume later with `/load` or `gopilot --load <session-id>`
+
+This means GoPilot does not silently edit your files. The model proposes full file contents first, and the actual write only happens when you explicitly run `/apply`.
 
 ## Commands
 
@@ -165,6 +199,8 @@ GoPilot uses environment variables for optional configuration:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `GEMINI_API_BASE_URL` | `https://cloudcode-pa.googleapis.com/v1internal` | API endpoint |
+| `GOOGLE_CLOUD_PROJECT` | empty | Optional project hint for Gemini Code Assist |
+| `GOOGLE_CLOUD_PROJECT_ID` | empty | Alternative project hint for Gemini Code Assist |
 
 Sessions are stored in the OS user config directory, for example:
 
@@ -192,6 +228,51 @@ GoPilot/
 ├── Makefile
 └── go.mod
 ```
+
+## Sessions, Context, and File Edits
+
+### Sessions
+
+GoPilot automatically stores sessions as JSON files and can reopen them later with `/load` or `--load`.
+
+Each saved session includes:
+
+- visible chat messages
+- model-facing shared history
+- attached files
+- current model
+- workspace root
+- undo history for applied edits
+
+If a session is loaded from a different workspace than the current directory, GoPilot keeps the conversation but clears attached files to avoid mixing file context across repositories.
+
+### File Context
+
+Attached files are sent as structured workspace context:
+
+- path relative to the workspace root
+- detected language
+- full file contents
+
+When attaching directories, GoPilot walks them recursively, respects `.gitignore`, skips common generated/tool directories, rejects binary files, and ignores files larger than 256 KB.
+
+### `gopilot-file` edit blocks
+
+When the user asks for file creation or modification, GoPilot instructs the model to return edits like this:
+
+    ```gopilot-file path=relative/path/from/workspace
+    full file contents here
+    ```
+
+Important details:
+
+- the path must be relative to the workspace
+- the content must be the complete file, not a patch
+- nothing is written automatically
+- `/apply` writes the files
+- `/undo` restores the previous state
+
+That makes the editing flow explicit and reversible.
 
 ## Built With
 
