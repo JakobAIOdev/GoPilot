@@ -363,21 +363,31 @@ func (m *model) syncViewport() {
 	m.viewport.SetContent(b.String())
 }
 
-func (m model) statusText() string {
-	statusText := fmt.Sprintf("%d msgs  •  Enter send  •  /model  •  /add  •  /files  •  /apply  •  /copy  •  /plain  •  Esc quit", len(m.messages))
+func (m model) conversationMessageCount() int {
+	return len(m.sharedHistory)
+}
+
+func (m model) statusText(width int) string {
+	required := []string{
+		fmt.Sprintf("%d chat", m.conversationMessageCount()),
+		"Enter send",
+	}
+
+	optional := []string{"Tab complete", "Esc quit"}
 	if m.waiting {
-		statusText = fmt.Sprintf("%s  •  streaming from %s", statusText, m.currentModel())
+		optional = append([]string{fmt.Sprintf("streaming %s", m.currentModel())}, optional...)
 	}
 	if m.choosingModel {
-		statusText = fmt.Sprintf("%s  •  selecting model", statusText)
+		optional = append([]string{"model menu"}, optional...)
 	}
 	if strings.TrimSpace(m.sessionSaveErr) != "" {
-		statusText = fmt.Sprintf("%s  •  session save failed", statusText)
+		optional = append(optional, "save failed")
 	}
 	if hint := pendingApplyHint(m.messages); hint != "" {
-		statusText = fmt.Sprintf("%s  •  %s", statusText, hint)
+		optional = append(optional, hint)
 	}
-	return statusText
+
+	return fitInlineParts(width, required, optional)
 }
 
 func (m *model) refreshLayout() {
@@ -391,7 +401,7 @@ func (m *model) refreshLayout() {
 	m.viewport.SetWidth(max(contentWidth-4, 28))
 	m.input.SetWidth(inputWidth)
 
-	statusText := m.statusText()
+	statusText := m.statusText(contentWidth)
 
 	statusHeight := lipgloss.Height(statusStyle.Width(contentWidth).Render(statusText))
 	inputHeight := lipgloss.Height(inputFrameStyle.Width(contentWidth).Render(m.input.View()))
@@ -652,7 +662,7 @@ func (m model) View() tea.View {
 	}
 
 	contentWidth := max(m.panelW, 36)
-	status := statusStyle.Width(contentWidth).Render(m.statusText())
+	status := statusStyle.Width(contentWidth).Render(m.statusText(contentWidth))
 	conversation := m.viewport.View()
 	inputPreview := m.renderInputPreview(contentWidth)
 	inputCard := inputFrameStyle.Width(contentWidth).Render(m.input.View())

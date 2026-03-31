@@ -316,3 +316,24 @@ func TestProjectInstructionsStatusShowsRecognizedFile(t *testing.T) {
 		t.Fatalf("expected GOPILOT.md path, got %q", status)
 	}
 }
+
+func TestConversationMessageCountIgnoresSplashAndLocalNotices(t *testing.T) {
+	t.Parallel()
+
+	m := model{
+		messages: []chat.Message{
+			{From: "GoPilot", Content: initialSplash},
+			{From: "GoPilot", Content: "Loaded session `abc`."},
+			{From: "User", Content: "hello"},
+			{From: "GoPilot", Content: "hi"},
+		},
+		sharedHistory: []chat.Message{
+			{From: "User", Content: "hello"},
+			{From: "GoPilot", Content: "hi"},
+		},
+	}
+
+	if got := m.conversationMessageCount(); got != 2 {
+		t.Fatalf("expected 2 chat messages, got %d", got)
+	}
+}
