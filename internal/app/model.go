@@ -174,13 +174,6 @@ func (m model) contextFilesLen() int {
 	return len(m.contextFiles)
 }
 
-func (m model) completionStatus() string {
-	if len(m.completions) > 0 {
-		return fmt.Sprintf("Tab autocomplete (%d)", len(m.completions))
-	}
-	return "Tab autocomplete"
-}
-
 func (m *model) resetCompletions() {
 	m.completionBase = ""
 	m.completions = nil
@@ -509,7 +502,7 @@ func (m model) projectInstructionsStatus() string {
 		}
 	}
 
-	return fmt.Sprintf("%s  %s", assistantLabelStyle.Render("instructions"), path)
+	return path
 }
 
 func (m *model) refreshAttachedContext(paths []string) {

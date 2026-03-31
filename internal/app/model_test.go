@@ -312,9 +312,6 @@ func TestProjectInstructionsStatusShowsRecognizedFile(t *testing.T) {
 	m.refreshProjectInstructions()
 
 	status := m.projectInstructionsStatus()
-	if !strings.Contains(status, "instructions") {
-		t.Fatalf("expected instructions label, got %q", status)
-	}
 	if !strings.Contains(status, "GOPILOT.md") {
 		t.Fatalf("expected GOPILOT.md path, got %q", status)
 	}

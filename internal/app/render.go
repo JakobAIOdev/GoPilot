@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -435,6 +436,58 @@ func joinSections(parts ...string) string {
 	return strings.Join(nonEmpty, "\n")
 }
 
+func fitInlineParts(width int, required []string, optional []string) string {
+	parts := append([]string(nil), required...)
+	parts = append(parts, optional...)
+
+	join := func(items []string) string {
+		return strings.Join(items, "  •  ")
+	}
+
+	text := join(parts)
+	for len(optional) > 0 && lipgloss.Width(text) > width {
+		optional = optional[:len(optional)-1]
+		parts = append(append([]string(nil), required...), optional...)
+		text = join(parts)
+	}
+
+	if lipgloss.Width(text) <= width {
+		return text
+	}
+
+	runes := []rune(text)
+	if width <= 1 {
+		return ""
+	}
+	if len(runes) <= width {
+		return text
+	}
+	return string(runes[:max(width-1, 0)]) + "…"
+}
+
+func (m model) metaText(width int) string {
+	required := []string{
+		m.currentModel(),
+		fmt.Sprintf("%d files", m.contextFilesLen()),
+	}
+
+	optional := []string{}
+	if instructions := strings.TrimSpace(m.projectInstructionsStatus()); instructions != "" {
+		optional = append(optional, filepath.Base(instructions))
+	}
+	if len(m.completions) > 0 {
+		optional = append(optional, fmt.Sprintf("%d suggestions", len(m.completions)))
+	}
+	if hint := pendingApplyHint(m.messages); hint != "" {
+		optional = append(optional, hint)
+	}
+	if strings.TrimSpace(m.sessionSaveErr) != "" {
+		optional = append(optional, "save failed")
+	}
+
+	return fitInlineParts(width, required, optional)
+}
+
 func (m model) renderMenu(width int, title string, hint string, items []string, activeIndex int, menuIndex int) string {
 	var lines []string
 	lines = append(lines, menuTitleStyle.Render(title))
@@ -604,17 +657,7 @@ func (m model) View() tea.View {
 	inputPreview := m.renderInputPreview(contentWidth)
 	inputCard := inputFrameStyle.Width(contentWidth).Render(m.input.View())
 	completionBox := m.renderCompletions(contentWidth)
-	metaText := fmt.Sprintf("%s  •  %s  •  %s  •  %d attached  •  %s", assistantLabelStyle.Render("model"), m.currentModel(), assistantLabelStyle.Render("workspace"), m.contextFilesLen(), m.completionStatus())
-	if instructions := m.projectInstructionsStatus(); instructions != "" {
-		metaText = fmt.Sprintf("%s  •  %s", metaText, instructions)
-	}
-	if strings.TrimSpace(m.sessionSaveErr) != "" {
-		metaText = fmt.Sprintf("%s  •  %s", metaText, assistantLabelStyle.Render("session save failed"))
-	}
-	if hint := pendingApplyHint(m.messages); hint != "" {
-		metaText = fmt.Sprintf("%s  •  %s", metaText, assistantLabelStyle.Render(hint))
-	}
-	inputMeta := inputMetaStyle.Width(contentWidth).Render(metaText)
+	inputMeta := inputMetaStyle.Width(contentWidth).Render(m.metaText(contentWidth))
 
 	menu := ""
 	if m.choosingModel {
