@@ -605,6 +605,9 @@ func (m model) View() tea.View {
 	inputCard := inputFrameStyle.Width(contentWidth).Render(m.input.View())
 	completionBox := m.renderCompletions(contentWidth)
 	metaText := fmt.Sprintf("%s  •  %s  •  %s  •  %d attached  •  %s", assistantLabelStyle.Render("model"), m.currentModel(), assistantLabelStyle.Render("workspace"), m.contextFilesLen(), m.completionStatus())
+	if instructions := m.projectInstructionsStatus(); instructions != "" {
+		metaText = fmt.Sprintf("%s  •  %s", metaText, instructions)
+	}
 	if strings.TrimSpace(m.sessionSaveErr) != "" {
 		metaText = fmt.Sprintf("%s  •  %s", metaText, assistantLabelStyle.Render("session save failed"))
 	}

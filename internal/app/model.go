@@ -5,15 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/atotto/clipboard"
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/atotto/clipboard"
 
 	"github.com/JakobAIOdev/GoPilot/internal/chat"
 	"github.com/JakobAIOdev/GoPilot/internal/gemini"
@@ -78,42 +79,43 @@ type streamFlushMsg struct{}
 type retryStreamMsg struct{}
 
 type model struct {
-	input          textinput.Model
-	viewport       viewport.Model
-	messages       []chat.Message
-	sharedHistory  []chat.Message
-	undoHistory    []undoBatch
-	sessionID      string
-	sessionCreated time.Time
-	sessionSaveErr string
-	backend        chat.Backend
-	models         []string
-	modelIndex     int
-	workspaceRoot  string
-	contextFiles   []chat.ContextFile
-	ready          bool
-	waiting        bool
-	choosingModel  bool
-	choosingSession bool
-	plainView      bool
-	modelMenuIndex int
-	sessionMenuIndex int
-	sessionFilter    string
-	sessionSummaries []sessionSummary
-	width          int
-	height         int
-	panelW         int
-	stream         <-chan chat.StreamEvent
-	cancelStream   context.CancelFunc
-	streamBuffer   strings.Builder
-	flushScheduled bool
-	pendingRequest chat.Request
-	retryCount     int
-	completionBase string
-	completions    []string
-	completionIndex int
-	completionStart int
-	completionEnd   int
+	input                   textinput.Model
+	viewport                viewport.Model
+	messages                []chat.Message
+	sharedHistory           []chat.Message
+	undoHistory             []undoBatch
+	sessionID               string
+	sessionCreated          time.Time
+	sessionSaveErr          string
+	backend                 chat.Backend
+	models                  []string
+	modelIndex              int
+	workspaceRoot           string
+	projectInstructionsPath string
+	contextFiles            []chat.ContextFile
+	ready                   bool
+	waiting                 bool
+	choosingModel           bool
+	choosingSession         bool
+	plainView               bool
+	modelMenuIndex          int
+	sessionMenuIndex        int
+	sessionFilter           string
+	sessionSummaries        []sessionSummary
+	width                   int
+	height                  int
+	panelW                  int
+	stream                  <-chan chat.StreamEvent
+	cancelStream            context.CancelFunc
+	streamBuffer            strings.Builder
+	flushScheduled          bool
+	pendingRequest          chat.Request
+	retryCount              int
+	completionBase          string
+	completions             []string
+	completionIndex         int
+	completionStart         int
+	completionEnd           int
 }
 
 func newModel() model {
@@ -135,18 +137,19 @@ func newModel() model {
 	vp.SoftWrap = true
 
 	m := model{
-		input:         ti,
-		viewport:      vp,
-		backend:       gemini.NewBackend(),
-		models:        availableModels(),
-		modelIndex:    0,
-		sessionID:     newSessionID(),
+		input:          ti,
+		viewport:       vp,
+		backend:        gemini.NewBackend(),
+		models:         availableModels(),
+		modelIndex:     0,
+		sessionID:      newSessionID(),
 		sessionCreated: time.Now(),
-		workspaceRoot: currentWorkingDir(),
+		workspaceRoot:  currentWorkingDir(),
 		messages: []chat.Message{
 			{From: "GoPilot", Content: initialSplash},
 		},
 	}
+	m.refreshProjectInstructions()
 	m.saveSession()
 
 	m.syncViewport()
@@ -450,6 +453,7 @@ func (m *model) startNewSession() {
 	m.messages = []chat.Message{
 		{From: "GoPilot", Content: initialSplash},
 	}
+	m.refreshProjectInstructions()
 	m.sessionID = newSessionID()
 	m.sessionCreated = time.Now()
 	m.resetCompletions()
@@ -474,6 +478,7 @@ func (m *model) loadSessionCommand(target string) error {
 	if currentRoot != "" {
 		m.workspaceRoot = currentRoot
 	}
+	m.refreshProjectInstructions()
 	if sessionRoot != "" && currentRoot != "" && sessionRoot != currentRoot {
 		m.contextFiles = nil
 		m.messages = append(m.messages, chat.Message{
@@ -485,6 +490,26 @@ func (m *model) loadSessionCommand(target string) error {
 	m.input.SetValue("")
 	m.syncViewport()
 	return nil
+}
+
+func (m *model) refreshProjectInstructions() {
+	m.projectInstructionsPath = gemini.FindProjectInstructionsPath(m.workspaceRoot)
+}
+
+func (m model) projectInstructionsStatus() string {
+	if strings.TrimSpace(m.projectInstructionsPath) == "" {
+		return ""
+	}
+
+	path := "GOPILOT.md"
+	if rel, err := filepath.Rel(m.workspaceRoot, m.projectInstructionsPath); err == nil {
+		rel = filepath.ToSlash(rel)
+		if rel != "" && rel != "." {
+			path = rel
+		}
+	}
+
+	return fmt.Sprintf("%s  %s", assistantLabelStyle.Render("instructions"), path)
 }
 
 func (m *model) refreshAttachedContext(paths []string) {
@@ -755,7 +780,7 @@ func (m *model) handleSlashCommand(input string) tea.Cmd {
 		if err := m.applyEditsFromText(last, false); err != nil {
 			if errors.Is(err, errNoProposedFileEdits) {
 				m.messages = append(m.messages, chat.Message{
-					From: "GoPilot",
+					From:    "GoPilot",
 					Content: "Nothing to apply from the last response. `/apply` only works when the assistant returned `gopilot-file` edit blocks.",
 				})
 				return nil
