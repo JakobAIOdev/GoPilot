@@ -15,6 +15,7 @@ A experimental terminal-based AI coding assistant built with Goland powered by G
 - **Stream responses** — Real-time streaming from Gemini models with live markdown rendering
 - **File context** — Attach workspace files for code-aware conversations (respects `.gitignore`)
 - **File editing** — AI proposes edits in `gopilot-file` blocks, apply with `/apply`, revert with `/undo`
+- **Project instructions** — Commit a `GOPILOT.md` file to define repository-specific AI rules and context
 - **Session persistence** — Automatic session save/load with structured and searchable history
 - **Multiple models** — Switch between Gemini models on the fly
 - **Smart autocomplete** — Tab-completion for commands, file paths, and model names
@@ -88,6 +89,7 @@ gopilot
 ```
 
 GoPilot uses the current working directory as the workspace root. Attach files, ask questions, and let the AI suggest code changes.
+If the repository contains a `GOPILOT.md` file, GoPilot automatically loads it and appends its contents to the model's system instructions for that workspace.
 
 ### Quick Start
 
@@ -185,7 +187,6 @@ GoPilot/
 ## Roadmap
 
 - **MCP Servers Integration** — Direct support for Model Context Protocol (MCP) servers to give the AI access to local tools and resources.
-- **`GOPILOT.md` Instructions** — Define project-specific AI rules, context, and system prompts by committing a `GOPILOT.md` file to your repository.
 - **Enhanced Linter Integration** — Automatic detection and feeding of workspace compilation errors back to the model.
 
 ## Contributing

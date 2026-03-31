@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -362,21 +363,31 @@ func (m *model) syncViewport() {
 	m.viewport.SetContent(b.String())
 }
 
-func (m model) statusText() string {
-	statusText := fmt.Sprintf("%d msgs  •  Enter send  •  /model  •  /add  •  /files  •  /apply  •  /copy  •  /plain  •  Esc quit", len(m.messages))
+func (m model) conversationMessageCount() int {
+	return len(m.sharedHistory)
+}
+
+func (m model) statusText(width int) string {
+	required := []string{
+		fmt.Sprintf("%d chat", m.conversationMessageCount()),
+		"Enter send",
+	}
+
+	optional := []string{"Tab complete", "Esc quit"}
 	if m.waiting {
-		statusText = fmt.Sprintf("%s  •  streaming from %s", statusText, m.currentModel())
+		optional = append([]string{fmt.Sprintf("streaming %s", m.currentModel())}, optional...)
 	}
 	if m.choosingModel {
-		statusText = fmt.Sprintf("%s  •  selecting model", statusText)
+		optional = append([]string{"model menu"}, optional...)
 	}
 	if strings.TrimSpace(m.sessionSaveErr) != "" {
-		statusText = fmt.Sprintf("%s  •  session save failed", statusText)
+		optional = append(optional, "save failed")
 	}
 	if hint := pendingApplyHint(m.messages); hint != "" {
-		statusText = fmt.Sprintf("%s  •  %s", statusText, hint)
+		optional = append(optional, hint)
 	}
-	return statusText
+
+	return fitInlineParts(width, required, optional)
 }
 
 func (m *model) refreshLayout() {
@@ -390,7 +401,7 @@ func (m *model) refreshLayout() {
 	m.viewport.SetWidth(max(contentWidth-4, 28))
 	m.input.SetWidth(inputWidth)
 
-	statusText := m.statusText()
+	statusText := m.statusText(contentWidth)
 
 	statusHeight := lipgloss.Height(statusStyle.Width(contentWidth).Render(statusText))
 	inputHeight := lipgloss.Height(inputFrameStyle.Width(contentWidth).Render(m.input.View()))
@@ -433,6 +444,58 @@ func joinSections(parts ...string) string {
 		nonEmpty = append(nonEmpty, part)
 	}
 	return strings.Join(nonEmpty, "\n")
+}
+
+func fitInlineParts(width int, required []string, optional []string) string {
+	parts := append([]string(nil), required...)
+	parts = append(parts, optional...)
+
+	join := func(items []string) string {
+		return strings.Join(items, "  •  ")
+	}
+
+	text := join(parts)
+	for len(optional) > 0 && lipgloss.Width(text) > width {
+		optional = optional[:len(optional)-1]
+		parts = append(append([]string(nil), required...), optional...)
+		text = join(parts)
+	}
+
+	if lipgloss.Width(text) <= width {
+		return text
+	}
+
+	runes := []rune(text)
+	if width <= 1 {
+		return ""
+	}
+	if len(runes) <= width {
+		return text
+	}
+	return string(runes[:max(width-1, 0)]) + "…"
+}
+
+func (m model) metaText(width int) string {
+	required := []string{
+		m.currentModel(),
+		fmt.Sprintf("%d files", m.contextFilesLen()),
+	}
+
+	optional := []string{}
+	if instructions := strings.TrimSpace(m.projectInstructionsStatus()); instructions != "" {
+		optional = append(optional, filepath.Base(instructions))
+	}
+	if len(m.completions) > 0 {
+		optional = append(optional, fmt.Sprintf("%d suggestions", len(m.completions)))
+	}
+	if hint := pendingApplyHint(m.messages); hint != "" {
+		optional = append(optional, hint)
+	}
+	if strings.TrimSpace(m.sessionSaveErr) != "" {
+		optional = append(optional, "save failed")
+	}
+
+	return fitInlineParts(width, required, optional)
 }
 
 func (m model) renderMenu(width int, title string, hint string, items []string, activeIndex int, menuIndex int) string {
@@ -599,19 +662,12 @@ func (m model) View() tea.View {
 	}
 
 	contentWidth := max(m.panelW, 36)
-	status := statusStyle.Width(contentWidth).Render(m.statusText())
+	status := statusStyle.Width(contentWidth).Render(m.statusText(contentWidth))
 	conversation := m.viewport.View()
 	inputPreview := m.renderInputPreview(contentWidth)
 	inputCard := inputFrameStyle.Width(contentWidth).Render(m.input.View())
 	completionBox := m.renderCompletions(contentWidth)
-	metaText := fmt.Sprintf("%s  •  %s  •  %s  •  %d attached  •  %s", assistantLabelStyle.Render("model"), m.currentModel(), assistantLabelStyle.Render("workspace"), m.contextFilesLen(), m.completionStatus())
-	if strings.TrimSpace(m.sessionSaveErr) != "" {
-		metaText = fmt.Sprintf("%s  •  %s", metaText, assistantLabelStyle.Render("session save failed"))
-	}
-	if hint := pendingApplyHint(m.messages); hint != "" {
-		metaText = fmt.Sprintf("%s  •  %s", metaText, assistantLabelStyle.Render(hint))
-	}
-	inputMeta := inputMetaStyle.Width(contentWidth).Render(metaText)
+	inputMeta := inputMetaStyle.Width(contentWidth).Render(m.metaText(contentWidth))
 
 	menu := ""
 	if m.choosingModel {

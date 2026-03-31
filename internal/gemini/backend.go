@@ -29,7 +29,7 @@ const (
 	retryMaxDelay        = 15 * time.Second
 )
 
-const systemPrompt = `You are GoPilot, a helpful AI coding assistant running inside a terminal.
+const baseSystemPrompt = `You are GoPilot, a helpful AI coding assistant running inside a terminal.
 You help the user understand, write, debug, and refactor code.
 Be concise but thorough. Prefer showing code over lengthy explanations.
 When showing code, always use fenced code blocks with the language identifier.
@@ -217,7 +217,7 @@ func (b *Backend) Stream(ctx context.Context, req chat.Request) (<-chan chat.Str
 			Request: vertexGenerateContentRequest{
 				Contents: toContents(req),
 				SystemInstruction: &content{
-					Parts: []part{{Text: systemPrompt}},
+					Parts: []part{{Text: systemPrompt(req.WorkspaceRoot)}},
 				},
 			},
 		}
@@ -327,6 +327,68 @@ func contextPrompt(req chat.Request) string {
 	}
 
 	return strings.TrimSpace(b.String())
+}
+
+func systemPrompt(workspaceRoot string) string {
+	prompt := strings.TrimSpace(baseSystemPrompt)
+	projectInstructions := strings.TrimSpace(loadProjectInstructions(workspaceRoot))
+	if projectInstructions == "" {
+		return prompt
+	}
+
+	var b strings.Builder
+	b.WriteString(prompt)
+	b.WriteString("\n\nThe repository includes additional instructions in GOPILOT.md. Follow them unless they conflict with higher-priority instructions.\n")
+	b.WriteString("<gopilot_instructions>\n")
+	b.WriteString(projectInstructions)
+	if !strings.HasSuffix(projectInstructions, "\n") {
+		b.WriteString("\n")
+	}
+	b.WriteString("</gopilot_instructions>")
+	return b.String()
+}
+
+func loadProjectInstructions(workspaceRoot string) string {
+	path := FindProjectInstructionsPath(workspaceRoot)
+	if path == "" {
+		return ""
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+
+	return string(data)
+}
+
+func FindProjectInstructionsPath(workspaceRoot string) string {
+	root := strings.TrimSpace(workspaceRoot)
+	if root == "" {
+		return ""
+	}
+
+	dir, err := filepath.Abs(root)
+	if err != nil {
+		return ""
+	}
+
+	for {
+		candidate := filepath.Join(dir, "GOPILOT.md")
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return ""
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
 }
 
 func (b *Backend) forwardStream(ctx context.Context, stream io.ReadCloser, events chan<- chat.StreamEvent) {
@@ -588,7 +650,7 @@ func retryDelay(attempt int) time.Duration {
 	var jitter [1]byte
 	if _, err := rand.Read(jitter[:]); err == nil {
 		fraction := float64(jitter[0]) / 255.0 // 0.0 to 1.0
-		jitterRange := float64(delay) * 0.4     // total range 40%
+		jitterRange := float64(delay) * 0.4    // total range 40%
 		delay = time.Duration(float64(delay) - jitterRange/2 + jitterRange*fraction)
 	}
 	return delay

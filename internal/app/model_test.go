@@ -182,11 +182,11 @@ func TestApplyEditsFromTextCreatesFilesAndUndoHistory(t *testing.T) {
 
 	root := t.TempDir()
 	m := model{
-		workspaceRoot: root,
-		sessionID:     "session-apply",
+		workspaceRoot:  root,
+		sessionID:      "session-apply",
 		sessionCreated: time.Now(),
-		models:        []string{"gemini-3-flash-preview"},
-		messages:      []chat.Message{{From: "GoPilot", Content: initialSplash}},
+		models:         []string{"gemini-3-flash-preview"},
+		messages:       []chat.Message{{From: "GoPilot", Content: initialSplash}},
 	}
 
 	text := "```gopilot-file path=1/info.txt\nhello\n```"
@@ -296,5 +296,44 @@ func TestApplyCommandShowsHelpfulMessageWithoutFileBlocks(t *testing.T) {
 	last := m.messages[len(m.messages)-1].Content
 	if !strings.Contains(last, "Nothing to apply from the last response") {
 		t.Fatalf("unexpected apply guidance: %q", last)
+	}
+}
+
+func TestProjectInstructionsStatusShowsRecognizedFile(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "GOPILOT.md"), []byte("repo rules"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := newModel()
+	m.workspaceRoot = root
+	m.refreshProjectInstructions()
+
+	status := m.projectInstructionsStatus()
+	if !strings.Contains(status, "GOPILOT.md") {
+		t.Fatalf("expected GOPILOT.md path, got %q", status)
+	}
+}
+
+func TestConversationMessageCountIgnoresSplashAndLocalNotices(t *testing.T) {
+	t.Parallel()
+
+	m := model{
+		messages: []chat.Message{
+			{From: "GoPilot", Content: initialSplash},
+			{From: "GoPilot", Content: "Loaded session `abc`."},
+			{From: "User", Content: "hello"},
+			{From: "GoPilot", Content: "hi"},
+		},
+		sharedHistory: []chat.Message{
+			{From: "User", Content: "hello"},
+			{From: "GoPilot", Content: "hi"},
+		},
+	}
+
+	if got := m.conversationMessageCount(); got != 2 {
+		t.Fatalf("expected 2 chat messages, got %d", got)
 	}
 }
